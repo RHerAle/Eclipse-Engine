@@ -63,5 +63,5 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) and the agreement in [`FLA.md`](FLA.md)
 
 Nothing computed here is permission to look at the Sun. The exposure figures are
 the ICNIRP equations evaluated under declared assumptions, and
-<https://eclipseradar.com/safety.html> sets out what they mean for an eye or a
+<https://eclipseradar.com/en/safety> sets out what they mean for an eye or a
 camera.
