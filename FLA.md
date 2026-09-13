@@ -252,7 +252,7 @@ repositorio público.
 
 ---
 
-## Anexo A — Identificación y firma
+## Anexo A. Identificación y firma
 
 **Beneficiario**
 Nombre y apellidos: ________________________________
@@ -278,7 +278,7 @@ Firma del Beneficiario (aceptación de la cesión, cláusula 2.4): _____________
 
 ---
 
-## Anexo B — Consentimiento del empleador
+## Anexo B. Consentimiento del empleador
 
 La entidad ________________________________, con NIF/identificación
 ______________, representada por ________________________________ en calidad de
@@ -561,7 +561,7 @@ repository.
 
 ---
 
-## Annex A — Identification and signature
+## Annex A. Identification and signature
 
 **Beneficiary**
 Full name: ________________________________
@@ -587,7 +587,7 @@ Signature of the Beneficiary (acceptance of the assignment, clause 2.4): _______
 
 ---
 
-## Annex B — Employer's consent
+## Annex B. Employer's consent
 
 The entity ________________________________, with tax ID ______________,
 represented by ________________________________ in the capacity of
