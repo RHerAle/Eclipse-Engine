@@ -1,0 +1,1375 @@
+// Eclipse-Engine
+// © 2026 eclipseradar.com
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+// Besselian shadow geometry in the browser. This is a port of
+// src/eclipsecat.py, which is where the elements come from and where the
+// checks live; keep the two in step. Everything below is a pure function of
+// the elements, so no ephemeris and no network call is involved.
+//
+// Longitudes are EAST-positive throughout. Meeus tabulates them west-positive
+// and mixing the conventions mirrors every path about Greenwich without
+// producing anything that looks wrong.
+'use strict';
+
+const Bess = (() => {
+  const F = 1 / 298.257223563, E2 = 2 * F - F * F, SQ = Math.sqrt(1 - E2);
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+  const poly = (c, t) => { let v = 0; for (let i = c.length - 1; i >= 0; i--) v = v * t + c[i]; return v; };
+  const dpoly = (c, t) => { let v = 0; for (let i = c.length - 1; i >= 1; i--) v = v * t + i * c[i]; return v; };
+
+  // Elements at t hours from t0 (TT). Angles come back in radians.
+  function evaluate(B, t) {
+    return {
+      x: poly(B.x, t), y: poly(B.y, t),
+      d: poly(B.d_deg, t) * D2R, mu: poly(B.mu_deg, t) * D2R,
+      l1: poly(B.l1, t), l2: poly(B.l2, t),
+      xd: dpoly(B.x, t), yd: dpoly(B.y, t)
+    };
+  }
+
+  const dmuOf = B => 1.002738 * B.delta_t_s * 15 / 3600 * D2R;
+
+  /* Where a point (px, py) of the fundamental plane meets the ellipsoid. The
+     ellipsoid is mapped onto a unit sphere through the reduced latitude,
+     which turns the intersection into one square root instead of an
+     iteration.
+
+     Six of the quantities this needs depend on the INSTANT and not on the
+     point: the ellipsoid radius at the declination, that radius's sine and
+     cosine, the declination's own sine and cosine, and the sidereal offset,
+     which is a property of the elements. One drag of the time scrub solves
+     both shadow cones at one instant and calls this **398 861 times a
+     frame** -- counted, on 2026-08-12 at greatest eclipse. The umbra is a
+     thousand of them; the rest is the penumbra, whose cone runs off the limb
+     over most of its angles, and every gap there is subdivided to depth
+     twelve. Rebuilding a square root, two cosines and a sine on each was a
+     seventh of that gesture. They are worked out once per loop and handed
+     down as plain numbers.
+
+     Passed, not cached. A WeakMap keyed on the elements object was tried and
+     is worse in three ways at once: it allocates an entry for every caller
+     that projects a single point -- `axisPoint` does, thousands of times,
+     sampling a central line -- it costs a hash lookup on every hit, and it
+     needs a reference compare on every hit besides, because `dmu` belongs to
+     the elements while the key is the instant. Get that compare wrong and an
+     `e` from one elements set used with another gives a shadow outline
+     displaced by the difference of two sidereal offsets, still shaped like a
+     shadow outline. Handing the numbers down deletes the allocation, the
+     lookup, the compare and the question together. */
+  function projectAt(r1, sd1, cd1, sd, cd, dmu, mu, px, py) {
+    const e1 = py / r1, q = 1 - px * px - e1 * e1;
+    if (q <= 0) return null;                       // the point misses the Earth
+    const c = Math.sqrt(q);
+    const su = e1 * cd1 + c * sd1;
+    if (Math.abs(su) >= 1) return null;
+    const cu = Math.sqrt(1 - su * su);
+    const H = Math.atan2(px, c * cd1 - e1 * sd1);
+    const lat = Math.atan2(su, SQ * cu) * R2D;
+    let lon = (H - mu + dmu) * R2D;
+    lon = ((lon + 180) % 360 + 360) % 360 - 180;
+    const zeta = SQ * su * sd + cu * Math.cos(H) * cd;
+    return { lat, lon, zeta, H, cu };
+  }
+
+  /* The form for a caller with one point to project: it works the six out
+     and keeps no cache entry. A caller with a loop works them out once and
+     calls `projectAt` directly.
+
+     The miss is tested FIRST, before the sine, the cosine and the sidereal
+     offset are paid for, because the miss is the common case and not the rare
+     one: `centralLine` steps eight hours at six-second intervals and the
+     shadow axis is off the Earth for four fifths of that window -- measured,
+     205 863 of 268 856 axis samples across the catalogue. Computing all six
+     as call arguments made those calls dearer than they were before any of
+     this, on the one function this work was argued from.
+
+     `q` here is the same expression on the same doubles as the one inside
+     `projectAt`, so it returns null on exactly the same inputs -- checked
+     against 59 290 of them, including both zeroes, the denormals, one unit in
+     the last place either side of the limb, and a NaN declination.
+
+     One thing does change: the reject returns before `dmuOf(B)` is
+     evaluated, so a call with no elements at all now answers "the point
+     missed the Earth" on four fifths of its calls instead of throwing. That
+     is accepted rather than overlooked. No caller passes a bad `B`, and
+     paying for the six on every miss to keep a TypeError is the wrong
+     trade. */
+  function project(B, e, px, py) {
+    const r1 = Math.sqrt(1 - E2 * Math.cos(e.d) ** 2), e1 = py / r1;
+    if (1 - px * px - e1 * e1 <= 0) return null;
+    return projectAt(r1, Math.sin(e.d) / r1, SQ * Math.cos(e.d) / r1,
+                     Math.sin(e.d), Math.cos(e.d), dmuOf(B), e.mu, px, py);
+  }
+
+  const axisPoint = (B, t) => { const e = evaluate(B, t); return project(B, e, e.x, e.y); };
+
+  // Exact circle-circle lens area, the same expression as geometry.py.
+  function obscuration(sep, rs, rm) {
+    if (sep >= rs + rm) return 0;
+    if (sep <= Math.abs(rm - rs)) return rm >= rs ? 1 : (rm * rm) / (rs * rs);
+    const a1 = rs * rs * Math.acos(Math.min(1, Math.max(-1, (sep * sep + rs * rs - rm * rm) / (2 * sep * rs))));
+    const a2 = rm * rm * Math.acos(Math.min(1, Math.max(-1, (sep * sep + rm * rm - rs * rs) / (2 * sep * rm))));
+    const a3 = 0.5 * Math.sqrt(Math.max(0, (-sep + rs + rm) * (sep + rs - rm) * (sep - rs + rm) * (sep + rs + rm)));
+    return (a1 + a2 - a3) / (Math.PI * rs * rs);
+  }
+
+  // Fraction of the solar DIAMETER covered while the phase is partial, ratio
+  // of diameters once the discs nest. The two branches are what NASA tabulates.
+  function magnitude(sep, rs, rm) {
+    if (sep >= rs + rm) return 0;
+    if (sep <= Math.abs(rm - rs)) return rm / rs;
+    return (rs + rm - sep) / (2 * rs);
+  }
+
+  // Observer constants, computed once per site instead of once per time step.
+  function observer(B, lat, lon, elev) {
+    const p = lat * D2R, h = (elev || 0) / 1000 / 6378.1366;
+    const N = 1 / Math.sqrt(1 - E2 * Math.sin(p) ** 2);
+    return { p, lon: lon * D2R, rc: (N + h) * Math.cos(p), rs: (N * (1 - E2) + h) * Math.sin(p), dmu: dmuOf(B) };
+  }
+
+  // `e`, `xi` and `eta` come back with the rest. Every caller that wants the
+  // Moon's drawn position needs the elements this already evaluated and the
+  // observer's own fundamental-plane coordinates, which this already has --
+  // and each of them was calling `evaluate` again for the same instant, eight
+  // polynomial evaluations of it, and rebuilding xi and eta out of three more
+  // trigonometric calls.
+  function geom(B, o, t) {
+    const e = evaluate(B, t);
+    const H = e.mu + o.lon - o.dmu;
+    const cH = Math.cos(H), sd = Math.sin(e.d), cd = Math.cos(e.d);
+    const xi = o.rc * Math.sin(H);
+    const eta = o.rs * cd - o.rc * cH * sd;
+    const zeta = o.rs * sd + o.rc * cH * cd;
+    const m = Math.hypot(e.x - xi, e.y - eta);
+    return { m, zeta, L1: e.l1 - zeta * B.tan_f1, L2: e.l2 - zeta * B.tan_f2, d: e.d, H,
+             e, xi, eta };
+  }
+
+  function altaz(o, g) {
+    const alt = Math.asin(Math.sin(o.p) * Math.sin(g.d) + Math.cos(o.p) * Math.cos(g.d) * Math.cos(g.H));
+    const az = Math.atan2(-Math.cos(g.d) * Math.sin(g.H),
+      Math.sin(g.d) * Math.cos(o.p) - Math.cos(g.d) * Math.sin(o.p) * Math.cos(g.H));
+    return { alt: alt * R2D, az: ((az * R2D) % 360 + 360) % 360 };
+  }
+
+  const utcOf = (B, t) => new Date((B.t0_TT_jd + t / 24 - B.delta_t_s / 86400 - 2440587.5) * 86400000);
+
+  function bisect(f, a, b) {
+    let fa = f(a);
+    for (let i = 0; i < 60; i++) { const c = (a + b) / 2, fc = f(c); if ((fa < 0) === (fc < 0)) { a = c; fa = fc; } else b = c; }
+    return (a + b) / 2;
+  }
+
+  // Contacts, magnitude, obscuration and duration for one observer. Returns
+  // null when no part of the eclipse reaches the site: a very small magnitude
+  // and "no eclipse here" must not be confusable.
+  function local(B, lat, lon, elev, span = 4.0, n = 4000) {
+    const o = observer(B, lat, lon, elev);
+    const step = 2 * span / n;
+    let best = null, gs = [];
+    for (let i = 0; i <= n; i++) {
+      const t = -span + i * step, g = geom(B, o, t);
+      // The inner contact is |m| = |L2|. L2 is negative inside an umbra and
+      // POSITIVE inside an antumbra, so the m + L2 form that holds for a total
+      // eclipse has no root for an annular one: annularity would report zero
+      // seconds everywhere while the magnitude still came out right.
+      gs.push({ t, out: g.m - g.L1, inn: g.m - Math.abs(g.L2), mag: (g.L1 - g.m) / (g.L1 + g.L2) });
+      if (!best || gs[i].mag > best.mag) best = gs[i];
+    }
+    if (best.mag <= 0) return null;
+
+    // Golden-section on the magnitude, which is monotone either side of maximum.
+    let a = best.t - step, b = best.t + step;
+    const magAt = t => { const g = geom(B, o, t); return (g.L1 - g.m) / (g.L1 + g.L2); };
+    for (let i = 0; i < 80; i++) {
+      const m1 = a + (b - a) * 0.382, m2 = a + (b - a) * 0.618;
+      if (magAt(m1) > magAt(m2)) b = m2; else a = m1;
+    }
+    const tMax = (a + b) / 2, gm = geom(B, o, tMax);
+
+    const fOf = key => t => { const g = geom(B, o, t); return key === 'out' ? g.m - g.L1 : g.m - Math.abs(g.L2); };
+    const roots = key => {
+      const f = fOf(key), r = [];
+      for (let i = 0; i < n; i++)
+        if ((gs[i][key] < 0) !== (gs[i + 1][key] < 0)) r.push(bisect(f, gs[i].t, gs[i + 1].t));
+      return r;
+    };
+    // Contacts are named by which way the curve crosses zero, never by the
+    // order the roots came out. First-root-is-C1 assumes both are inside the
+    // window; when only one is, a LAST contact gets stamped as a first one and
+    // every consumer that scans forward from C1 then finds an empty interval
+    // and concludes there is no eclipse here.
+    const name = (key, cIn, cOut) => {
+      const f = fOf(key), rr = roots(key), eps = 1e-6;
+      const before = rr.filter(r => r <= tMax && f(r + eps) < 0);
+      const after = rr.filter(r => r >= tMax && f(r + eps) > 0);
+      if (before.length) out[cIn] = stamp(Math.max(...before));
+      if (after.length) out[cOut] = stamp(Math.min(...after));
+    };
+
+    const stamp = t => {
+      const g = geom(B, o, t), aa = altaz(o, g);
+      return { t, utc: utcOf(B, t), alt: aa.alt, az: aa.az };
+    };
+    const rSun = (gm.L1 + gm.L2) / 2, rMoon = (gm.L1 - gm.L2) / 2;
+    const out = {
+      magnitude: magnitude(gm.m, rSun, rMoon),
+      obscuration: obscuration(gm.m, rSun, rMoon),
+      central: gm.L2 < 0 ? 'total' : 'annular',
+      MAX: stamp(tMax), duration_s: 0
+    };
+    name('out', 'C1', 'C4');
+    name('inn', 'C2', 'C3');
+    if (out.C2 && out.C3) out.duration_s = (out.C3.t - out.C2.t) * 3600;
+
+    // The shadow geometry does not care whether the Sun is up, and a user
+    // does. An eclipse whose maximum falls below the horizon is not visible
+    // from here even though every number above is correct.
+    if (out.MAX.alt > 0) { out.visible_obscuration = out.obscuration; out.visible_max = out.MAX; }
+    else {
+      // Fall back to the whole window rather than to C1: if a contact is
+      // missing the interval must widen, never collapse.
+      const ta = out.C1 ? out.C1.t : -span, tb = out.C4 ? out.C4.t : span;
+
+      // This used to sample 401 instants and keep the ones with the Sun up.
+      // Where the whole window sits at an altitude of about zero -- the
+      // grazing rim of the visible region -- that loop finds either all of
+      // them or none, and which of the two flips on a change of one unit in
+      // the last place of the elements. Two neighbouring points then answered
+      // "no eclipse here" and "0,0 % with the Sun at 0,0 degrees", and nothing
+      // about the geometry had changed.
+      //
+      // So the horizon is not sampled for any more. sin(alt) is A + B*cos H
+      // with H nearly linear in time and d nearly fixed, that is one cosine:
+      // over a window of a few hours it has one extremum and at most two
+      // zeros. The extremum is found on a five-minute grid and refined, and
+      // the zeros are bisected. The answer then turns on a comparison of a
+      // refined maximum against zero, which moves as smoothly as the input.
+      const altAt = t => altaz(o, geom(B, o, t)).alt;
+      const NS = 96;
+      let iBest = 0, aBest = -Infinity;
+      const grid = new Float64Array(NS + 1);
+      for (let i = 0; i <= NS; i++) {
+        grid[i] = altAt(ta + (tb - ta) * i / NS);
+        if (grid[i] > aBest) { aBest = grid[i]; iBest = i; }
+      }
+      // Golden section around the best sample. A cosine's peak is broad, so a
+      // five-minute grid cannot hide it; what this buys is the last decimal.
+      {
+        const step = (tb - ta) / NS, gr = 0.6180339887498949;
+        let lo = ta + (tb - ta) * Math.max(0, iBest - 1) / NS;
+        let hi = ta + (tb - ta) * Math.min(NS, iBest + 1) / NS;
+        let c = hi - gr * (hi - lo), d = lo + gr * (hi - lo);
+        let fc = altAt(c), fd = altAt(d);
+        for (let i = 0; i < 20 && step > 0; i++) {
+          if (fc > fd) { hi = d; d = c; fd = fc; c = hi - gr * (hi - lo); fc = altAt(c); }
+          else { lo = c; c = d; fc = fd; d = lo + gr * (hi - lo); fd = altAt(d); }
+        }
+        aBest = Math.max(aBest, fc, fd);
+      }
+
+      if (aBest <= 0) { out.visible_obscuration = 0; out.visible_max = null; }
+      else {
+        // The instants where the altitude crosses zero, bisected on the
+        // bracketing grid cells. At most two, and the runs between them are
+        // where the Sun is up.
+        const cross = lo => {
+          let a2 = ta + (tb - ta) * lo / NS, b2 = ta + (tb - ta) * (lo + 1) / NS;
+          const up0 = grid[lo] > 0;
+          for (let i = 0; i < 40; i++) {
+            const m = (a2 + b2) / 2;
+            if ((altAt(m) > 0) === up0) a2 = m; else b2 = m;
+          }
+          return (a2 + b2) / 2;
+        };
+        const runs = [];
+        let start = grid[0] > 0 ? ta : null;
+        for (let i = 0; i < NS; i++) {
+          if ((grid[i] > 0) === (grid[i + 1] > 0)) continue;
+          const t = cross(i);
+          if (start === null) start = t; else { runs.push([start, t]); start = null; }
+        }
+        if (start !== null) runs.push([start, tb]);
+        if (!runs.length) runs.push([ta, tb]);   // the peak is up but no sample was
+
+        let vo = 0, vt = null;
+        for (const [t0, t1] of runs) {
+          for (let i = 0; i <= 200; i++) {
+            const t = t0 + (t1 - t0) * i / 200, g = geom(B, o, t);
+            const ob = obscuration(g.m, (g.L1 + g.L2) / 2, (g.L1 - g.L2) / 2);
+            if (ob > vo) { vo = ob; vt = t; }
+          }
+        }
+        out.visible_obscuration = vo;
+        out.visible_max = vt === null ? null : stamp(vt);
+      }
+    }
+    return out;
+  }
+
+  // --- path geometry ------------------------------------------------------
+
+  // Great-circle distance in km, for deciding when a track needs more samples.
+  const R_KM = 6371.0088;
+  function arcKm(a, b) {
+    const p1 = a[0] * D2R, p2 = b[0] * D2R, dl = (b[1] - a[1]) * D2R;
+    const h = Math.sin((p2 - p1) / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    return 2 * R_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  // A fixed time step cannot sample a shadow track evenly: the umbra's ground
+  // speed diverges where the path ends at sunset, so six seconds that give a
+  // 2 km spacing mid-track give 110 km at the very end. Rather than sample the
+  // whole track at that rate, bisect only the intervals that need it.
+  function densify(pts, at, maxKm = 25, depth = 6) {
+    const out = [];
+    const fill = (a, b, d) => {
+      if (d >= depth || arcKm(a, b) <= maxKm) return;
+      const m = at((a[2] + b[2]) / 2);
+      if (!m) return;
+      fill(a, m, d + 1);
+      out.push(m);
+      fill(m, b, d + 1);
+    };
+    for (let i = 0; i < pts.length; i++) {
+      out.push(pts[i]);
+      const a = pts[i], b = pts[i + 1];
+      if (a && b) fill(a, b, 0);
+    }
+    return out;
+  }
+
+  // Central line: the axis intersection, sampled while it exists. The step is
+  // six seconds, not one minute: near the end of a path at grazing incidence
+  // the umbra crosses the ground at some 3 km/s, so a minute leaves 180 km
+  // gaps and the drawn line stops being where the shadow is.
+  //
+  // A sample that misses the Earth pushes a null instead of being dropped.
+  // Dropping it closes the array over the hole and the renderer then draws a
+  // straight chord across a gap the shadow never crossed.
+  function centralLine(B, step = 1 / 600) {
+    const pts = [];
+    let had = false;
+    for (let t = -4.0; t <= 4.0; t += step) {
+      const p = axisPoint(B, t);
+      if (p) { pts.push([p.lat, p.lon, t]); had = true; }
+      else if (had && pts[pts.length - 1] !== null) pts.push(null);
+    }
+    return densify(pts, tt => {
+      const q = axisPoint(B, tt);
+      return q ? [q.lat, q.lon, tt] : null;
+    });
+  }
+
+  // Northern and southern limits of a shadow, offsetting the axis in the
+  // fundamental plane perpendicular to the shadow's motion RELATIVE TO THE
+  // GROUND, by the cone radius at the observer's own zeta. Both corrections
+  // matter and both need iterating, because each depends on the point the
+  // other produces:
+  //
+  //  * the radius depends on zeta, which depends on where the point lands;
+  //  * the perpendicular depends on the relative velocity, and the observer's
+  //    own eastward speed is a few hundred m/s against an umbra doing a few
+  //    km/s. Ignoring it narrows the drawn band by up to 5 km on each side at
+  //    low latitude, which is a 4 % error on a 130 km half-width and puts the
+  //    edge of the band inside the region the same code calls total.
+  //
+  // The two edges are returned as `edges`, NOT as north and south. Those names
+  // do not survive: they are the left and right side of the shadow's motion,
+  // which coincides with latitude only while the shadow travels roughly
+  // eastward, and the two disagree at some 170 of 6200 sampled epochs across
+  // this catalogue. Relabelling them per epoch by latitude fixes the names and
+  // destroys the curves, because membership then flips mid-track and each
+  // polyline zigzags between the two edges. Each edge stays a continuous
+  // curve; whoever needs "the northern one" compares latitudes at one epoch.
+  function limits(B, which = 'l2', step = 1 / 600) {
+    const edges = [[], []];
+    const had = [false, false];
+    // No `evaluate` here: `edgePoint` does its own, and the one this loop used
+    // to make -- eight polynomial evaluations and an object, 4 801 times per
+    // call, twice per cone -- was read by nothing.
+    for (let t = -4.0; t <= 4.0; t += step) {
+      const side = [1, -1].map(s => edgePoint(B, which, t, s));
+      side.forEach((p, k) => {
+        const arr = edges[k];
+        if (p) { arr.push(p); had[k] = true; }
+        else if (had[k] && arr[arr.length - 1] !== null) arr.push(null);
+      });
+    }
+    return { edges: edges.map((arr, k) => densify(arr, tt => edgePoint(B, which, tt, k ? -1 : 1))) };
+  }
+
+  // One edge point at one instant, factored out so densify() can resample.
+  function edgePoint(B, which, t, s) {
+    const tanf = which === 'l2' ? B.tan_f2 : B.tan_f1;
+    const muDot = B.mu_deg[1] * D2R;
+    const e = evaluate(B, t);
+    const r1 = Math.sqrt(1 - E2 * Math.cos(e.d) ** 2);
+    const sd1 = Math.sin(e.d) / r1, cd1 = SQ * Math.cos(e.d) / r1;
+    const sd = Math.sin(e.d), cd = Math.cos(e.d), dmu = dmuOf(B);
+    let zeta = 0, xiD = 0, etaD = 0, p = null;
+    for (let k = 0; k < 5; k++) {
+      const L = Math.abs((which === 'l2' ? e.l2 : e.l1) - zeta * tanf);
+      const vx = e.xd - xiD, vy = e.yd - etaD, nrm = Math.hypot(vx, vy);
+      p = projectAt(r1, sd1, cd1, sd, cd, dmu, e.mu,
+                    e.x - s * L * vy / nrm, e.y + s * L * vx / nrm);
+      if (!p) return null;
+      zeta = p.zeta;
+      xiD = p.cu * Math.cos(p.H) * muDot;
+      etaD = p.cu * Math.sin(p.H) * sd * muDot;
+    }
+    return [p.lat, p.lon, t];
+  }
+
+  /* How far apart two consecutive vertices of a drawn curve may be. Shared by
+     the cone outline and by the rim walk that closes it, because they run into
+     the same two problems.
+
+     Longitudes are unwrapped before differencing: without that the pair either
+     side of the antimeridian reads as thirteen thousand kilometres apart when
+     it is two, and the walk bisects a gap that is not there.
+
+     And ground distance alone is not enough near a pole. At 89.5 degrees a
+     quarter of a degree of latitude is 250 km of longitude several times over,
+     so the distance test passes while consecutive points sit half the planet
+     apart in longitude, and whoever unwraps the ring afterwards has no way to
+     tell which way round the curve went -- it spirals instead of closing, and
+     the region came out spanning 874 degrees. Both criteria, always. */
+  const MAX_KM = 250, MAX_DLON = 60;
+  const dlonOf = (a, b) => (((b[1] - a[1]) + 540) % 360) - 180;
+  const gapKm = (a, b) => Math.hypot((b[0] - a[0]) * 111.19,
+    dlonOf(a, b) * 111.19 * Math.cos((a[0] + b[0]) / 2 * D2R));
+  const tooFar = (a, b) => gapKm(a, b) > MAX_KM || Math.abs(dlonOf(a, b)) > MAX_DLON;
+
+  // Outline of one shadow cone on the globe at one instant: the locus where
+  // the observer's distance from the axis equals the cone's radius at the
+  // observer's own zeta. `which` is 'l1' for the penumbra and 'l2' for the
+  // umbra or the antumbra -- the radius is |l2 - zeta*tan_f2| because L2 is
+  // negative inside the umbra and positive inside the antumbra, and the edge
+  // of either is m = |L2|, the same criterion local() bisects for the inner
+  // contacts. Where the cone misses the Earth the ring is broken into
+  // segments, one per arc that does touch the ground.
+  function outlineRuns(B, t, which, nth = 181) {
+    const e = evaluate(B, t), tanf = which === 'l2' ? B.tan_f2 : B.tan_f1;
+    // One outline point at one fundamental-plane angle.
+    // Converged, not a fixed count: at grazing incidence the radius
+    // depends ever more steeply on zeta and four rounds leave the vertex
+    // kilometres out -- and moving differently than its neighbours, which
+    // is jitter the playback shows.
+    const r1 = Math.sqrt(1 - E2 * Math.cos(e.d) ** 2);
+    const sd1 = Math.sin(e.d) / r1, cd1 = SQ * Math.cos(e.d) / r1;
+    const sd = Math.sin(e.d), cd = Math.cos(e.d), dmu = dmuOf(B);
+    // The rim walk that closes an open arc runs at this same instant and
+    // takes these by name, not out of a positional array: `projectAt` already
+    // has nine positional arguments, and feeding six of them from `o.K6[0]`
+    // through `o.K6[5]` puts a silent transposition one edit away.
+    /* The angle's sine and cosine are fixed for the whole iteration and were
+       being recomputed on every round of it. Everything else is as it was: a
+       version that iterated on a zeta-only projection and projected the
+       converged point once at the end was tried and reverted -- the loop
+       settles in about two rounds, so skipping two arc-tangents on one of
+       them did not pay for the extra projection at the end, and it measured
+       as a wash. */
+    const solve = (th) => {
+      const ct = Math.cos(th), st = Math.sin(th);
+      const base = which === 'l2' ? e.l2 : e.l1;
+      let zeta = 0, p = null, px = 0, py = 0;
+      for (let k = 0; k < 12; k++) {
+        const L = Math.abs(base - zeta * tanf);
+        px = e.x + L * ct; py = e.y + L * st;
+        p = projectAt(r1, sd1, cd1, sd, cd, dmu, e.mu, px, py);
+        if (!p) return { p: null, px, py };
+        if (Math.abs(p.zeta - zeta) < 1e-10) break;
+        zeta = p.zeta;
+      }
+      return { p, px, py };
+    };
+    const pointAt = (th) => { const q = solve(th); return q.p ? [q.p.lat, q.p.lon] : null; };
+    // Uniform sampling in the fundamental plane is not uniform on the
+    // ground: where the cone passes near a pole a whole sector of angles
+    // collapses onto a small patch and its neighbours end up twelve
+    // thousand kilometres apart -- a straight chord the drawing shows. Long
+    // gaps are densified by bisection IN THE ANGLE, where the cone is
+    // convex and every inserted point is solved exactly. A mid-angle that
+    // misses the Earth means the outline dips off the planet between the
+    // two ends: the walk splits the segment there instead of drawing a
+    // chord across the limb.
+    // The angle each run of points starts and ends at is kept with it. Where a
+    // run ends because the cone ran off the planet, that angle is what the
+    // limb closure needs in order to find the rim.
+    const seg = [];
+    let cur = [], th0 = 0, th1 = 0;
+    const flush = () => { if (cur.length) { seg.push({ pts: cur, th0, th1 }); cur = []; } };
+    const emit = (p, th) => {
+      if (p) { if (!cur.length) th0 = th; th1 = th; cur.push(p); }
+      else flush();
+    };
+    const walk = (pA, thA, pB, thB, d) => {
+      if (d >= 12) { emit(pB, thB); return; }
+      if (pA && pB && !tooFar(pA, pB)) { emit(pB, thB); return; }
+      const thM = (thA + thB) / 2, pM = pointAt(thM);
+      walk(pA, thA, pM, thM, d + 1);
+      walk(pM, thM, pB, thB, d + 1);
+    };
+    let prev = pointAt(0);
+    emit(prev, 0);
+    for (let i = 0; i < nth - 1; i++) {
+      const thA = 2 * Math.PI * i / (nth - 1), thB = 2 * Math.PI * (i + 1) / (nth - 1);
+      const pB = pointAt(thB);
+      walk(prev, thA, pB, thB, 0);
+      prev = pB;
+    }
+    flush();
+    return { runs: seg, solve, r1, sd1, cd1, sd, cd, dmu, e, tanf,
+             base: which === 'l2' ? e.l2 : e.l1 };
+  }
+
+  // Backwards-compatible shape: just the point lists.
+  const shadowOutline = (B, t, which, nth) => outlineRuns(B, t, which, nth).runs.map(r => r.pts);
+
+  /* Closing an open arc on the LIMB, which is the only honest way to close it.
+
+     When the cone runs off the planet the outline is an arc, not a ring, and
+     the ground it covers is bounded by the arc AND by the rim of the Earth as
+     the shadow sees it. That rim is the unit circle of the auxiliary sphere in
+     the fundamental plane, so both ends of the arc sit exactly on it and the
+     region closes by walking it from one end to the other. Which way round is
+     not a guess: the rim point halfway along one of the two candidate arcs is
+     either under the cone or it is not.
+
+     Everything else that could close the shape is wrong. A straight chord
+     between the ends cuts across the limb and puts the shading over ground the
+     shadow never touched -- that is what used to draw a line across Africa
+     outside the visibility limit. Leaving it open draws a line where there
+     should be an area. */
+  function closeOnLimb(o) {
+    const TAU = 2 * Math.PI, { runs, solve, r1, sd1, cd1, sd, cd, dmu, e, base, tanf } = o;
+    if (!runs.length || runs.some(r => r.pts.length < 2)) return null;
+    const edge = (from, to) => {          // last angle still on the planet
+      let a = from, b = to;
+      for (let i = 0; i < 60; i++) { const m = (a + b) / 2; if (solve(m).p) a = m; else b = m; }
+      return a;
+    };
+    const psiOf = th => { const q = solve(th); return Math.atan2(q.py / r1, q.px); };
+    const K = 1 - 1e-9;                 // a hair inside, so projectAt accepts it
+    const rimAt = psi => {
+      const px = Math.cos(psi), py = r1 * Math.sin(psi);
+      const p = projectAt(r1, sd1, cd1, sd, cd, dmu, e.mu, K * px, K * py);
+      return p ? { p, px, py } : null;
+    };
+    const under = psi => {
+      const q = rimAt(psi);
+      return !!q && Math.hypot(e.x - q.px, e.y - q.py) < Math.abs(base - q.p.zeta * tanf);
+    };
+    /* Walk the rim from where the cone left the planet to where it comes back,
+       the way round that stays under the cone, and hand back the points. */
+    const rimArc = (thOut, thIn) => {
+      const psiA = psiOf(edge(thOut, (thOut + thIn) / 2));
+      const psiB = psiOf(edge(thIn, (thOut + thIn) / 2));
+      const dPos = ((psiB - psiA) % TAU + TAU) % TAU;
+      const delta = under(psiA + dPos / 2) ? dPos : dPos - TAU;
+      /* Bisected, not sampled at a fixed step, and for the same reason the
+         outline is: near a pole the rim sweeps longitude far faster than it
+         covers ground, so a uniform step in the rim parameter leaves
+         consecutive points most of a turn apart -- and then whoever unwraps
+         the ring spirals instead of closing it. The region came out spanning
+         874 degrees of longitude. Both criteria, distance and angle. */
+      const n = Math.max(8, Math.ceil(Math.abs(delta) / (Math.PI / 180)));
+      const at = i => { const q = rimAt(psiA + delta * i); return q ? [q.p.lat, q.p.lon] : null; };
+      const out = [];
+      const step = (fa, a, fb, b, dep) => {
+        if (dep >= 10 || !fa || !fb || !tooFar(fa, fb)) { if (fb) out.push(fb); return; }
+        const m = (a + b) / 2, fm = at(m);
+        step(fa, a, fm, m, dep + 1);
+        step(fm, m, fb, b, dep + 1);
+      };
+      let prev = at(0);
+      for (let i = 1; i <= n; i++) {
+        const f = at(i / n);
+        step(prev, (i - 1) / n, f, i / n, 0);
+        prev = f;
+      }
+      return out;
+    };
+    /* The ring is the runs in order, with a rim arc spliced into every gap
+       between them. A gap whose middle is still ON the planet is not a gap at
+       all: it is the seam where the walk happened to start, at theta = 0 in
+       the middle of an arc, so the two runs simply join. */
+    const ring = [];
+    for (let i = 0; i < runs.length; i++) {
+      ring.push.apply(ring, runs[i].pts);
+      const next = runs[(i + 1) % runs.length];
+      const thOut = runs[i].th1;
+      const thIn = next.th0 + (i + 1 === runs.length ? TAU : 0);
+      if (thIn <= thOut + 1e-12) continue;
+      if (solve((thOut + thIn) / 2).p) continue;     // no gap: the runs join
+      const arc = rimArc(thOut, thIn);
+      if (!arc.length) return null;
+      ring.push.apply(ring, arc);
+    }
+    return ring.length > 2 ? ring : null;
+  }
+
+  // The outline plus the poles it encloses. A cone that contains a pole
+  // produces a ring that WRAPS it: in latitude/longitude the longitudes
+  // sweep the whole circle and the ring cannot be closed as an ordinary
+  // polygon -- the fill comes out on the wrong side, and during playback
+  // the topology flips the moment the cone lets the pole go, which reads as
+  // the shadow jumping. The caller closes such rings through the pole.
+  //
+  // The exact criterion is the same one the outline uses, evaluated at the
+  // pole: the pole's fundamental-plane distance from the axis against the
+  // cone's radius at the pole's own zeta.
+  function shadowRegion(B, t, which, nth = 181) {
+    const e = evaluate(B, t);
+    const tanf = which === 'l2' ? B.tan_f2 : B.tan_f1, base = which === 'l2' ? e.l2 : e.l1;
+    // SQ, not 1. The Earth's radius vector at the pole is (1 - f) equatorial
+    // radii, so the pole sits at (0, SQ cos d, SQ sin d) in the fundamental
+    // plane and not on the unit sphere. Twenty-one kilometres, which sounds
+    // negligible and is not: this test only ever matters while the edge of the
+    // cone is crossing the pole, and that is exactly the window it was getting
+    // wrong.
+    const pole = (sign) => {
+      const eta = sign * SQ * Math.cos(e.d), zeta = sign * SQ * Math.sin(e.d);
+      return Math.hypot(e.x, e.y - eta) < Math.abs(base - zeta * tanf);
+    };
+    // One segment is NOT the same as a closed ring, and treating it as one is
+    // what put the instantaneous shadow outside the visibility limit it can
+    // never leave. When the cone runs off the Earth over a range of angles
+    // that happens to contain theta = 0, the walk emits a single run whose two
+    // ends are thousands of kilometres apart -- 8 213 km at 16:51:38 UTC on
+    // 2026-08-12, and every one of that eclipse's 439 single-segment instants
+    // is open. Closing it as a polygon draws a chord straight across the limb.
+    // The ring is closed only if the walk got the whole way round, which is
+    // exactly its first point being its last.
+    const o = outlineRuns(B, t, which, nth);
+    let segs = o.runs.map(r => r.pts);
+    let one = segs.length === 1 ? segs[0] : null;
+    let closed = !!one && one.length > 2
+      && Math.abs(one[0][0] - one[one.length - 1][0]) < 1e-6
+      && Math.abs((((one[0][1] - one[one.length - 1][1]) + 540) % 360) - 180) < 1e-6;
+    // Not a ring on its own: close it on the limb, which makes it one.
+    if (!closed) {
+      const ring = closeOnLimb(o);
+      if (ring) { segs = [ring]; one = ring; closed = true; }
+    }
+    return { segs, closed, onLimb: closed && segs[0] !== (o.runs[0] || {}).pts,
+             poleN: pole(1), poleS: pole(-1) };
+  }
+
+  // Greatest obscuration on a lat/lon grid, for shading the visibility zone.
+  // The elements are evaluated once per time step and the observer transform
+  // once per cell, which is what keeps a global grid inside a few hundred ms.
+  // Max obscuration over the whole eclipse, on an equirectangular grid.
+  //
+  // The pruning is what makes a fine grid affordable, and it is exact rather
+  // than a heuristic. Every condition that can rule a cell out at one instant
+  // is monotone in cos H: the Sun is up when zeta = rs*sd + rc*cd*cos H > 0,
+  // and the observer is within reach of the penumbra along eta only when
+  // |eta - y| < L1, with eta = rs*cd - rc*sd*cos H. Intersecting both in
+  // cos H leaves a single interval, which is two arcs in H and therefore at
+  // most two runs of columns; the rest of the row is skipped without
+  // evaluating anything. L1 is replaced by its bound l1 -- zeta is in [0,1]
+  // and tan_f1 > 0, so l1 - zeta*tan_f1 <= l1 -- which makes the interval a
+  // superset. The test inside the loop is the same one as before, so the
+  // pruning cannot change a single cell; besselian.test.js checks that
+  // against an unpruned sweep.
+  // Golden section on the maximum in time, starting from an instant already
+  // known to be the closest of a coarse scan.
+  //
+  // This is not a refinement anyone can skip. Measured on 2026-08-12, the
+  // coarse scan at 3.2-minute steps undershoots the true maximum by 4e-4 in
+  // the median and by 1.4e-2 in the tail away from the terminator, which at a
+  // typical gradient is tens of kilometres of contour displacement. Worse, it
+  // undershoots by DIFFERENT amounts at different points, so a grid built on
+  // the coarse scan and a refinement built on the exact value are level sets
+  // of two different functions: 13 % of contour vertices came out with no sign
+  // change to bisect. The grid and the refinement have to be the same
+  // function, and this is it.
+  const T_SPAN = 3.2;
+
+  // Obscuration at one instant for one observer, without allocating.
+  //
+  // evaluate() and geom() each build an object, and this is called millions of
+  // times while the contours are refined: the objects alone were most of the
+  // run time. The arithmetic below is the same as those two functions
+  // composed, and besselian.test.js checks that it agrees with them.
+  function obsAt(B, o, t) {
+    const x = poly(B.x, t), y = poly(B.y, t);
+    const d = poly(B.d_deg, t) * D2R, mu = poly(B.mu_deg, t) * D2R;
+    const H = mu + o.lon - o.dmu;
+    const cH = Math.cos(H), sd = Math.sin(d), cd = Math.cos(d);
+    // The Sun has to be above the GEODETIC horizon, which is what local()
+    // uses to decide whether there is a visible eclipse in the panel.
+    // zeta > 0 is the geocentric horizon, and on an ellipsoid they are not
+    // the same: the two criteria disagree by up to 0.091 degrees of solar
+    // altitude and, near sunset, those minutes were worth 19 points of
+    // obscuration between the band the map painted and the figure the panel
+    // gave for the same point. A map that contradicts its own answer is
+    // worse than a coarse map.
+    if (Math.sin(o.p) * sd + Math.cos(o.p) * cd * cH <= 0) return 0;
+    const zeta = o.rs * sd + o.rc * cH * cd;
+    const L1 = poly(B.l1, t) - zeta * B.tan_f1;
+    const m = Math.hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
+    if (m >= L1) return 0;
+    const L2 = poly(B.l2, t) - zeta * B.tan_f2;
+    return obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
+  }
+
+  // Visibility margin: how much the observer has to spare, or is short of,
+  // being inside the penumbra, in Earth radii, with the Sun above the
+  // horizon. Positive inside, negative outside, zero exactly at external
+  // contact.
+  //
+  // It is the exact criterion for "something is visible here", which is why
+  // the visibility limit contours it instead of a very small obscuration
+  // level. The difference is not cosmetic: near that edge the eclipse lasts
+  // minutes, and a 121-instant sweep of the obscuration misses it by as much
+  // as 0.0165 -- thirty-two of every two thousand two hundred fringe points
+  // read as zero. L1 - m, by contrast, is smooth in time and does not depend
+  // on the sampling landing inside the eclipse: it passes through zero
+  // exactly where the edge of the penumbra touches the ground.
+  function visAt(B, o, t) {
+    const x = poly(B.x, t), y = poly(B.y, t);
+    const d = poly(B.d_deg, t) * D2R, mu = poly(B.mu_deg, t) * D2R;
+    const H = mu + o.lon - o.dmu;
+    const cH = Math.cos(H), sd = Math.sin(d), cd = Math.cos(d);
+    if (Math.sin(o.p) * sd + Math.cos(o.p) * cd * cH <= 0) return -1;
+    const zeta = o.rs * sd + o.rc * cH * cd;
+    const L1 = poly(B.l1, t) - zeta * B.tan_f1;
+    const m = Math.hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
+    const v = L1 - m;
+    return v < -1 ? -1 : v;
+  }
+
+  function timeMax(B, o, k, nt, span, at) {
+    span = span || T_SPAN;
+    at = at || (t => obsAt(B, o, t));
+    const T = kk => -span + 2 * span * kk / (nt - 1);
+    let a = T(Math.max(0, k - 1)), b = T(Math.min(nt - 1, k + 1));
+    const gr = 0.6180339887498949;
+    let c = b - gr * (b - a), d = a + gr * (b - a), fc = at(c), fd = at(d);
+    // Nine steps leave the interval at 1.3 % of its 6.4 minutes, that is,
+    // five seconds of time. Near a smooth maximum that is 1e-6 of
+    // obscuration; going further does not pay. T(k) itself is not
+    // re-evaluated here: the caller already has it from the coarse sweep.
+    for (let i = 0; i < 9; i++) {
+      if (fc > fd) { b = d; d = c; fd = fc; c = b - gr * (b - a); fc = at(c); }
+      else { a = c; c = d; fc = fd; d = a + gr * (b - a); fd = at(d); }
+    }
+    return Math.max(fc, fd);
+  }
+
+  function obscurationGrid(B, nlon = 640, nlat = 320, nt = 121) {
+    const grid = new Float32Array(nlon * nlat);
+    // At which instant each cell's maximum happens. The drawing does not use
+    // it: the contour refinement does, so it can look at a few instants
+    // around it rather than sweeping the six hours again. It is the
+    // difference between refining a vertex in 4 us and in 18.
+    const tmax = new Int16Array(nlon * nlat).fill(-1);
+    // A second field, the visibility margin, in the same pass: the loop
+    // already has m and L1 in hand and keeping their maximum costs nothing.
+    // The dashed outer limit comes out of this, and it comes out exact where
+    // a small-obscuration contour only got as far as approximate.
+    const vis = new Float32Array(nlon * nlat).fill(-1);
+    const tvis = new Int16Array(nlon * nlat).fill(-1);
+    const dmu = dmuOf(B), rows = [];
+    for (let j = 0; j < nlat; j++) {
+      const lat = (90 - (j + 0.5) * 180 / nlat) * D2R;
+      const N = 1 / Math.sqrt(1 - E2 * Math.sin(lat) ** 2);
+      rows.push({ p: lat, rc: N * Math.cos(lat), rs: N * (1 - E2) * Math.sin(lat),
+                  tan: Math.tan(lat) });
+    }
+    const clamp = c => c < -1 ? -1 : c > 1 ? 1 : c;
+    for (let k = 0; k < nt; k++) {
+      const t = -T_SPAN + 2 * T_SPAN * k / (nt - 1), e = evaluate(B, t);
+      const sd = Math.sin(e.d), cd = Math.cos(e.d);
+      const base = (e.mu - dmu) * R2D;              // lon = H - (mu - dmu)
+      for (let j = 0; j < nlat; j++) {
+        const r = rows[j];
+        let cmin = -r.tan * sd / cd, cmax = 1;           // el Sol sobre el horizonte
+        const P = r.rs * cd - e.y, Q = r.rc * sd;        // |eta - y| < l1
+        if (Math.abs(Q) < 1e-12) {
+          if (Math.abs(P) >= e.l1) continue;
+        } else {
+          const a = (P - e.l1) / Q, b = (P + e.l1) / Q;
+          cmin = Math.max(cmin, Math.min(a, b));
+          cmax = Math.min(cmax, Math.max(a, b));
+        }
+        if (cmin > cmax || cmin > 1 || cmax < -1) continue;
+        const h0 = Math.acos(clamp(cmax)), h1 = Math.acos(clamp(cmin));
+        for (const arc of [[h0, h1], [-h1, -h0]]) {
+          const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
+          const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
+          for (let ii = lo; ii <= hi; ii++) {
+            const i = ((ii % nlon) + nlon) % nlon;
+            const H = e.mu + (-180 + (i + 0.5) * 360 / nlon) * D2R - dmu;
+            const cH = Math.cos(H);
+            // Geodetic horizon, the same one obsAt and local() use.
+            if (Math.sin(r.p) * sd + Math.cos(r.p) * cd * cH <= 0) continue;
+            const zeta = r.rs * sd + r.rc * cH * cd;
+            const m = Math.hypot(e.x - r.rc * Math.sin(H), e.y - (r.rs * cd - r.rc * cH * sd));
+            const L1 = e.l1 - zeta * B.tan_f1;
+            const idx = j * nlon + i;
+            const vm = L1 - m;
+            if (vm > vis[idx]) { vis[idx] = vm; tvis[idx] = k; }
+            if (m >= L1) continue;
+            const L2 = e.l2 - zeta * B.tan_f2;
+            const o = obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
+            if (o > grid[idx]) { grid[idx] = o; tmax[idx] = k; }
+          }
+        }
+      }
+    }
+
+    // Second pass: where the eclipse is partial, the maximum is refined in
+    // time. Outside that it is not needed -- a cell in totality is already 1
+    // and one with no eclipse is 0 -- so this costs about 20 % of the grid.
+    for (let j = 0; j < nlat; j++) {
+      const r = rows[j], lat = (90 - (j + 0.5) * 180 / nlat) * D2R;
+      for (let i = 0; i < nlon; i++) {
+        const idx = j * nlon + i, v = grid[idx];
+        if (!(v > 0 && v < 1)) continue;
+        const o = { p: lat, lon: (-180 + (i + 0.5) * 360 / nlon) * D2R,
+                    rc: r.rc, rs: r.rs, dmu };
+        const w = timeMax(B, o, tmax[idx], nt, T_SPAN);
+        if (w > v) grid[idx] = w;
+      }
+    }
+
+    // And the same for the margin, except the fringe needs more care there.
+    // A cell right on the shore can fail to be inside the penumbra at ANY of
+    // the 121 instants and be inside between two of them: it keeps the floor,
+    // -1, and the limit passes through the wrong place. So the whole cell is
+    // recomputed, with no hint, whenever its sign disagrees with a
+    // neighbour's; a hint is enough where the value is already near zero.
+    const near = new Uint8Array(nlon * nlat);
+    for (let j = 0; j < nlat; j++) {
+      for (let i = 0; i < nlon; i++) {
+        const idx = j * nlon + i, v = vis[idx];
+        if (v > -0.05 && v < 0.05) { near[idx] = 1; continue; }
+        const p = v >= 0;
+        for (const q of [j > 0 ? idx - nlon : -1, j < nlat - 1 ? idx + nlon : -1,
+                         j * nlon + (i + nlon - 1) % nlon, j * nlon + (i + 1) % nlon])
+          if (q >= 0 && (vis[q] >= 0) !== p) { near[idx] = 2; break; }
+      }
+    }
+    for (let j = 0; j < nlat; j++) {
+      const r = rows[j], lat = (90 - (j + 0.5) * 180 / nlat) * D2R;
+      for (let i = 0; i < nlon; i++) {
+        const idx = j * nlon + i;
+        if (!near[idx]) continue;
+        const lon = -180 + (i + 0.5) * 360 / nlon;
+        const o = { p: lat, lon: lon * D2R, rc: r.rc, rs: r.rs, dmu };
+        const w = (near[idx] === 1 && tvis[idx] >= 0)
+          ? timeMax(B, o, tvis[idx], nt, T_SPAN, t => visAt(B, o, t))
+          : visMargin(B, lat * R2D, lon, { nt, o });
+        if (w > vis[idx]) vis[idx] = w;
+      }
+    }
+    return { grid, tmax, vis, tvis, nlon, nlat, nt };
+  }
+
+
+  // Max obscuration at one point, from the elements alone and to the same
+  // accuracy as the grid, because it runs the same refinement.
+  //
+  // `k` narrows the coarse scan to the neighbourhood of an instant already
+  // known to be close, which is what makes refining thousands of contour
+  // vertices affordable. It is a hint, not a promise: if the window comes up
+  // empty the scan falls back to the whole span rather than reporting that
+  // there is no eclipse here.
+  function maxObscuration(B, lat, lon, opts) {
+    return fieldMax(B, lat, lon, opts, obsAt, 0);
+  }
+
+  // Same as maxObscuration but over the visibility margin. The floor is -1
+  // and not 0: outside the penumbra the margin is negative, and that sign is
+  // what the contour needs.
+  function visMargin(B, lat, lon, opts) {
+    return fieldMax(B, lat, lon, opts, visAt, -1);
+  }
+
+  function fieldMax(B, lat, lon, opts, kernel, floor) {
+    opts = opts || {};
+    const nt = opts.nt || 121, span = opts.span || T_SPAN;
+    const o = opts.o || observer(B, lat, lon, 0);
+    const at = t => kernel(B, o, t);
+    const T = k => -span + 2 * span * k / (nt - 1);
+    let best = floor, bk = -1;
+    const scan = (a, b) => {
+      for (let k = a; k <= b; k++) { const v = at(T(k)); if (v > best) { best = v; bk = k; } }
+    };
+
+    // The hint is the instant of a neighbouring grid cell's maximum, and it
+    // exists so as not to sweep six hours at every one of the thousands of
+    // vertices that need refining. SEVERAL are accepted, and that is not a
+    // convenience: near the terminator the visible obscuration has two
+    // separate humps, one for each spell the Sun spends above the horizon,
+    // and two neighbouring cells can have their maximum in different ones.
+    // With a single hint the bisection between those two cells chases the
+    // wrong hump: measured on 2036-08-21, at 78 N it gave 0.207 where the
+    // full sweep gives 0.715, and the vertex came out pinned four kilometres
+    // from its curve, in a spike.
+    //
+    // Widening the window does not help there, because the wrong hump's
+    // maximum is interior to its own window and stops it growing. What holds
+    // the case up is looking in both.
+    const ks = (Array.isArray(opts.k) ? opts.k : [opts.k]).filter(k => k >= 0);
+    let lo = 0, hi = nt - 1;
+    if (ks.length) {
+      // The window covers EVERYTHING between the hints, not a slice around
+      // each. The instant of the maximum moves continuously along the edge
+      // being bisected, so at any intermediate point it falls between the two
+      // ends'; looking only around each end leaves out exactly the middle,
+      // and there the bisected function stops being the intended one.
+      lo = Math.max(0, Math.min.apply(null, ks) - 2);
+      hi = Math.min(nt - 1, Math.max.apply(null, ks) + 2);
+    }
+    scan(lo, hi);
+    // Y aun asi la ventana se ensancha mientras el maximo caiga en su borde:
+    // en el caso normal no cuesta nada, y donde la pista falla acaba
+    // barriendolo todo.
+    while (lo > 0 && (bk < 0 || bk === lo)) { const n = Math.max(0, lo - 3); scan(n, lo - 1); lo = n; }
+    while (hi < nt - 1 && (bk < 0 || bk === hi)) { const n = Math.min(nt - 1, hi + 3); scan(hi + 1, n); hi = n; }
+    if (bk < 0) return floor;
+    if (floor === 0 && best >= 1) return 1;
+    return Math.max(best, timeMax(B, o, bk, nt, span, at));
+  }
+
+  // Filled obscuration bands, as closed rings of [lat, lon].
+  //
+  // The grid decides the TOPOLOGY -- which cells a level runs through and in
+  // what order -- and nothing else. Every vertex sits on a grid edge whose two
+  // ends straddle the level, and the crossing is recovered by BISECTING the
+  // true maximum-obscuration function along that edge, not by interpolating
+  // the two grid values. So the vertex position does not inherit the grid step
+  // either; what is left is the bisection tolerance, which is metres, and the
+  // chord between consecutive vertices. besselian.test.js measures both.
+  //
+  // The domain is framed with a row and a column of -1 one cell outside the
+  // world. Every contour therefore closes inside that frame, with no special
+  // case for the poles and none for the antimeridian, and the stretch of ring
+  // that runs through the frame is off the map: the view is clamped to the
+  // world and cannot pan there. A band that genuinely crosses the antimeridian
+  // comes out cut at both edges, which is what a non-wrapping map has to show.
+  // The outermost band starts at 5 %, not at 0.1 %.
+  //
+  // Not an aesthetic choice. Near the edge of the penumbra the eclipse lasts
+  // minutes and the 121-instant sweep misses it: measured against a
+  // 2001-instant sweep, the loss reaches 0.0165 of obscuration and 32 of 2227
+  // fringe points with an eclipse read as zero. A 0.1 % contour chases a
+  // function that is zero in patches there, and comes out ragged. 5 % gives
+  // three times the margin over that loss. What is left undrawn is some
+  // 175 km of fringe over a 7000 km penumbra, and the real limit is drawn
+  // already: it is the visibility contour, the dashed line.
+  const BAND_LEVELS = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+
+  // Conexiones de marching squares. Bits: tl 8, tr 4, br 2, bl 1.
+  // Codigos de lado: 0 arriba, 1 derecha, 2 abajo, 3 izquierda.
+  const MS_CASE = [
+    [], [[3, 2]], [[2, 1]], [[3, 1]], [[0, 1]], null, [[0, 2]], [[3, 0]],
+    [[3, 0]], [[0, 2]], null, [[0, 1]], [[3, 1]], [[2, 1]], [[3, 2]], []
+  ];
+
+  const KM_PER_DEG = 111.19;
+  function contours(B, opts) {
+    opts = opts || {};
+    const levels = opts.levels || BAND_LEVELS;
+    const tolKm = opts.tolKm === undefined ? 0.5 : opts.tolKm;
+    // Ten passes and not seven: measured, the seventh was still inserting
+    // points in 113 combinations of eclipse and level, that is, the cut-off
+    // arrived before convergence did. The subdivision only works where it is
+    // needed, so raising the cap costs nothing where it had already
+    // finished.
+    const maxDepth = opts.maxDepth === undefined ? 10 : opts.maxDepth;
+    const G = opts.grid || obscurationGrid(B, opts.nlon || 400, opts.nlat || 200, opts.nt || 121);
+    const nlon = G.nlon, nlat = G.nlat, nt = G.nt;
+    // The lattice: frame, world edge, cell centres, edge, frame.
+    //
+    // The world edge carries REAL values, computed, not interpolated. Without
+    // it, the edge joining the last cell centre to the -1 frame was cut by
+    // interpolating against -1 over 1.35 degrees, and that cut fell INSIDE
+    // the map: measured, up to 66 km in along the antimeridian and 39 at the
+    // poles, with the wrong band painted there, across all 56 eclipses. With
+    // real nodes at +-180 and +-90, every crossing against the frame falls on
+    // the world edge or beyond, which is where it was meant to fall.
+    const nrow = nlat + 4, ncol = nlon + 4;
+    const dlat = 180 / nlat, dlon = 360 / nlon;
+
+    const lats = new Float64Array(nrow), lons = new Float64Array(ncol);
+    lats[0] = 90 + dlat; lats[1] = 90;
+    lats[nlat + 2] = -90; lats[nlat + 3] = -90 - dlat;
+    lons[0] = -180 - dlon; lons[1] = -180;
+    lons[nlon + 2] = 180; lons[nlon + 3] = 180 + dlon;
+    for (let j = 0; j < nlat; j++) lats[j + 2] = 90 - (j + 0.5) * dlat;
+    for (let i = 0; i < nlon; i++) lons[i + 2] = -180 + (i + 0.5) * dlon;
+
+    // Two fields through the same machinery. The bands are traced over the
+    // greatest obscuration; the outer limit, over the visibility margin,
+    // which passes through zero exactly where the edge of the penumbra
+    // touches the ground. Everything below -- marching squares, bisection,
+    // subdivision, smoothing -- reads `val`, `kAt` and `FLD`, which are
+    // reassigned when the field changes.
+    let val, kAt, FLD;
+    const lattice = (arr, karr, F) => {
+      const v = new Float32Array(nrow * ncol).fill(-1);
+      const k = new Int16Array(nrow * ncol).fill(-1);
+      for (let j = 0; j < nlat; j++) {
+        for (let i = 0; i < nlon; i++) {
+          v[(j + 2) * ncol + i + 2] = arr[j * nlon + i];
+          k[(j + 2) * ncol + i + 2] = karr[j * nlon + i];
+        }
+      }
+      const edge = (r, c, rIn, cIn) => {
+        const kh = k[rIn * ncol + cIn];
+        k[r * ncol + c] = kh;
+        v[r * ncol + c] = F(lats[r], lons[c], kh);
+      };
+      for (let c = 1; c <= nlon + 2; c++) {
+        const cIn = Math.min(nlon + 1, Math.max(2, c));
+        edge(1, c, 2, cIn);
+        edge(nlat + 2, c, nlat + 1, cIn);
+      }
+      for (let r = 2; r <= nlat + 1; r++) {
+        edge(r, 1, r, 2);
+        edge(r, nlon + 2, r, nlon + 1);
+      }
+      return { val: v, kAt: k, F };
+    };
+    const F_OBS = (la, lo, k) => maxObscuration(B, la, lo, { nt, k });
+    const F_VIS = (la, lo, k) => visMargin(B, la, lo, { nt, k });
+    const jobs = [{ lat: lattice(G.grid, G.tmax, F_OBS), levels }];
+    if (opts.visible !== false && G.vis)
+      jobs.push({ lat: lattice(G.vis, G.tvis, F_VIS), levels: [0], vis: true });
+
+    // The instant of the maximum in the nearest cells, as a time hint for a
+    // point that is not on the grid.
+    const kNear = (la, lo) => {
+      const j = Math.min(nlat - 1, Math.max(0, Math.floor((90 - la) / dlat)));
+      const i = Math.min(nlon - 1, Math.max(0, Math.floor((lo + 180) / dlon)));
+      const out = [];
+      for (let dj = 0; dj <= 1; dj++) {
+        for (let di = 0; di <= 1; di++) {
+          const jj = Math.min(nlat - 1, j + dj), ii = Math.min(nlon - 1, i + di);
+          const k = kAt[(jj + 2) * ncol + ii + 2];
+          if (k >= 0 && out.indexOf(k) < 0) out.push(k);
+        }
+      }
+      return out;
+    };
+
+    // A point of the contour on the normal to a chord, searched half a chord
+    // to either side. Returns null if there is no sign change there, which is
+    // what happens above the terminator: the region boundary there is a jump
+    // in the function and not a level curve, and there is nothing to refine.
+    const onCurve = (level, a, b) => {
+      const la = (a[0] + b[0]) / 2, lo = (a[1] + b[1]) / 2;
+      if (Math.abs(la) > 90 || Math.abs(lo) > 180) return null;
+      const cs = Math.max(1e-6, Math.cos(la * D2R));
+      const dx = (b[1] - a[1]) * cs, dy = b[0] - a[0];
+      const L = Math.hypot(dx, dy);
+      if (!(L > 0)) return null;
+      const nx = -dy / L, ny = dx / L, kh = kNear(la, lo);
+      // The normal is traced in arc distance and converted back to longitude
+      // by dividing by the cosine of the latitude. Near the pole that cosine
+      // is tiny and a displacement of one degree of arc becomes a hundred of
+      // longitude: measured, vertices came out at 185 degrees, outside the
+      // domain. Hence the two guards: the search radius never exceeds half a
+      // degree of arc, and a result that leaves the frame is discarded.
+      const at = u => [la + ny * u, lo + nx * u / cs];
+      const inside = q => Math.abs(q[0]) <= 90 && Math.abs(q[1]) <= 180;
+      // Half a chord to either side, which is what the comment used to say
+      // and what is needed: with a whole chord the bisection could latch onto
+      // ANOTHER branch of the contour passing nearby, and the ring crossed
+      // itself. The true curve departs from its chord by far less than half a
+      // chord, so if the root is not there, it is not this one.
+      const R = Math.min(L / 2, 0.5);
+      const f = u => { const q = at(u); return FLD(q[0], q[1], kh) - level; };
+      let u0 = -R, u1 = R, f0 = f(u0);
+      if ((f0 < 0) === (f(u1) < 0)) return null;
+      for (let it = 0; it < 12; it++) {
+        const u = (u0 + u1) / 2, fu = f(u);
+        if ((f0 < 0) === (fu < 0)) { u0 = u; f0 = fu; } else { u1 = u; }
+      }
+      const um = (u0 + u1) / 2, q = at(um);
+      if (!inside(q)) return null;
+      // A sign change is not always a root. Above the terminator the greatest
+      // obscuration JUMPS from zero to a finite value, because the Sun sets
+      // before the maximum, and a bisection that crosses that jump converges
+      // to the sunset line instead of to the level curve. The point it
+      // returned was perfectly computed and did not belong to this curve:
+      // measured on 2026-08-12, 348 points like that, up to six kilometres
+      // out, and every one of them a tooth in the drawing.
+      //
+      // Twelve bisections over half a degree leave the remainder at some
+      // thirteen metres, that is |f| of order 1e-4 at a real root; at a jump
+      // |f| stays at the size of the jump. A threshold of 1e-3 separates them
+      // unambiguously. Rejecting leaves the segment straight, which is coarse
+      // but is the shape of the boundary: a jump has no curve to follow.
+      if (Math.abs(f(um)) <= 1e-3) return q;
+      // Before rejecting, the same doubt as on the grid edge: it may not be a
+      // jump but a time hint that does not hold here. Retried without it.
+      const g = u => { const w = at(u); return FLD(w[0], w[1], -1) - level; };
+      let g0 = g(-R);
+      if ((g0 < 0) === (g(R) < 0)) return null;
+      let a0 = -R, a1 = R;
+      for (let it = 0; it < 12; it++) {
+        const u = (a0 + a1) / 2, gu = g(u);
+        if ((g0 < 0) === (gu < 0)) { a0 = u; g0 = gu; } else { a1 = u; }
+      }
+      const um2 = (a0 + a1) / 2, q2 = at(um2);
+      return (inside(q2) && Math.abs(g(um2)) <= 1e-3) ? q2 : null;
+    };
+
+    // Adaptive subdivision. The grid decides WHERE THE VERTICES START; the
+    // tolerance decides where they end up. For a curve sampled at constant
+    // step, the distance h from a vertex to the chord joining its two
+    // neighbours is four times the sagitta of one segment, so h/4 estimates
+    // the error without evaluating anything. Segments over tolerance get a
+    // new point, and that one is computed against the real function.
+    const segKm = (a, b) => Math.hypot((b[1] - a[1]) * Math.cos((a[0] + b[0]) / 2 * D2R),
+                                       b[0] - a[0]) * KM_PER_DEG;
+    function refineRing(ring, level) {
+      for (let pass = 0; pass < maxDepth; pass++) {
+        const n = ring.length;
+        const h = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+          const a = ring[(i - 1 + n) % n], b = ring[i], c = ring[(i + 1) % n];
+          const cs = Math.cos(b[0] * D2R);
+          const ax = (a[1] - b[1]) * cs, ay = a[0] - b[0];
+          const cx = (c[1] - b[1]) * cs, cy = c[0] - b[0];
+          const L = Math.hypot(cx - ax, cy - ay);
+          h[i] = L > 0 ? Math.abs(ax * (cy - ay) - ay * (cx - ax)) / L * KM_PER_DEG : 0;
+        }
+        const out = [];
+        let added = 0;
+        for (let i = 0; i < n; i++) {
+          const a = ring[i], b = ring[(i + 1) % n];
+          out.push(a);
+          // a[2] marks a segment already tried that has no root to refine:
+          // above the terminator the region boundary is a jump, not a level
+          // curve. Without the mark it gets probed again on every pass, and
+          // half of an eclipse's contour runs along the terminator.
+          if (a[2]) continue;
+          const est = Math.max(h[i], h[(i + 1) % n]) / 4;
+          const len = segKm(a, b);
+          if (est <= tolKm || len < 2 * tolKm || len > 1000) continue;
+          const q = onCurve(level, a, b);
+          if (q) { out.push(q); added++; } else { a[2] = 1; }
+        }
+        if (!added) break;
+        ring = out;
+      }
+      return ring;
+    }
+
+    // The region boundary above the terminator is a jump, and a jump has no
+    // curve to follow: the only thing known about it is which pair of grid
+    // nodes it passes between. Bisection places it precisely on each edge,
+    // but the grid is 0.56 degrees and at high latitude that is twenty
+    // kilometres of longitude against sixty of latitude, so the chain of cuts
+    // comes out as a zigzag: teeth up to fifty kilometres, with the ten
+    // levels piled on the same jump drawn as a tangle.
+    //
+    // They get smoothed, and ONLY they do. A level vertex is where the
+    // function says it is and does not get touched -- the drawing's measured
+    // accuracy lives on that. A jump vertex is on one particular edge and
+    // nowhere better inside it, so averaging it with its neighbours loses
+    // nothing that was known: it removes the sampling noise and leaves the
+    // line the jump actually describes.
+    function smoothJumps(ring, rounds = 20) {
+      const n = ring.length;
+      if (n < 5) return ring;
+      for (let it = 0; it < rounds; it++) {
+        const next = ring.slice();
+        for (let i = 0; i < n; i++) {
+          const b = ring[i];
+          if (!b[3]) continue;
+          const a = ring[(i - 1 + n) % n], c = ring[(i + 1) % n];
+          // A ring that crosses the antimeridian carries 360-degree jumps
+          // between consecutive vertices; averaging across one of those sends
+          // the point to the middle of the map.
+          if (Math.abs(a[1] - b[1]) > 5 || Math.abs(c[1] - b[1]) > 5) continue;
+          // A Laplacian average, and then PROJECTED ONTO ITS OWN EDGE. That
+          // the jump crosses that edge is certain; where along it, the grid
+          // knows no better. So the vertex is allowed to run along the edge,
+          // which is the direction carrying no information, and forbidden to
+          // leave it, which is the direction that does. Free smoothing would
+          // eat the curves.
+          const mla = (a[0] + 2 * b[0] + c[0]) / 4, mlo = (a[1] + 2 * b[1] + c[1]) / 4;
+          const dla = b[6] - b[4], dlo = b[7] - b[5];
+          const den = dla * dla + dlo * dlo;
+          let t = den > 0 ? ((mla - b[4]) * dla + (mlo - b[5]) * dlo) / den : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          next[i] = [b[4] + t * dla, b[5] + t * dlo, 0, 1, b[4], b[5], b[6], b[7]];
+        }
+        ring = next;
+      }
+      // Whatever is still a spike after twenty passes is not a spike of the
+      // curve: it is a jump vertex trapped between two neighbours that follow
+      // another branch. Its edge does not say where the jump is, only that it
+      // crosses it, so removing it erases nothing that was known and leaves
+      // the straight chord between its neighbours, which passes through the
+      // same place without the tooth.
+      const keep = [];
+      for (let i = 0; i < ring.length; i++) {
+        const b = ring[i];
+        if (b[3]) {
+          const a = ring[(i - 1 + ring.length) % ring.length];
+          const c = ring[(i + 1) % ring.length];
+          const cs = Math.cos(b[0] * D2R);
+          const ax = (a[1] - b[1]) * cs, ay = a[0] - b[0];
+          const cx = (c[1] - b[1]) * cs, cy = c[0] - b[0];
+          const L = Math.hypot(cx - ax, cy - ay);
+          if (L > 0 && Math.abs(a[1] - b[1]) < 5 && Math.abs(c[1] - b[1]) < 5 &&
+              Math.abs(ax * (cy - ay) - ay * (cx - ax)) / L * KM_PER_DEG > 5) continue;
+        }
+        keep.push(b);
+      }
+      return keep.length >= 4 ? keep : ring;
+    }
+
+    const NH = nrow * ncol, NE = 2 * NH;
+    const nb1 = new Int32Array(NE), nb2 = new Int32Array(NE);
+    const seen = new Uint8Array(NE);
+    const out = [];
+    let vertices = 0, fallbacks = 0, jumps = 0;
+
+    const visOut = [];
+    for (const job of jobs) {
+    val = job.lat.val; kAt = job.lat.kAt; FLD = job.lat.F;
+    for (const level of job.levels) {
+      nb1.fill(-1); nb2.fill(-1); seen.fill(0);
+      const link = (a, b) => {
+        if (nb1[a] < 0) nb1[a] = b; else nb2[a] = b;
+        if (nb1[b] < 0) nb1[b] = a; else nb2[b] = a;
+      };
+      for (let r = 0; r < nrow - 1; r++) {
+        for (let c = 0; c < ncol - 1; c++) {
+          const tl = val[r * ncol + c], tr = val[r * ncol + c + 1];
+          const bl = val[(r + 1) * ncol + c], br = val[(r + 1) * ncol + c + 1];
+          const idx = (tl >= level ? 8 : 0) | (tr >= level ? 4 : 0)
+                    | (br >= level ? 2 : 0) | (bl >= level ? 1 : 0);
+          let segs = MS_CASE[idx];
+          if (segs === null) {
+            // Saddle. The centre decides whether the interior runs through
+            // the middle (and then what gets separated are the two outer
+            // corners) or the other way round. Either choice gives closed
+            // curves; what it cannot do is be decided differently in
+            // neighbouring cells.
+            const mid = (tl + tr + br + bl) / 4;
+            segs = (mid >= level) ? [[3, 0], [1, 2]] : [[0, 1], [2, 3]];
+            if (idx === 10) segs = (mid >= level) ? [[0, 1], [2, 3]] : [[3, 0], [1, 2]];
+          }
+          if (!segs.length) continue;
+          const E = [r * ncol + c, NH + r * ncol + c + 1,
+                     (r + 1) * ncol + c, NH + r * ncol + c];
+          for (const sg of segs) link(E[sg[0]], E[sg[1]]);
+        }
+      }
+
+      // Every cut edge belongs to exactly two cells, so it has degree two and
+      // everything walked is a closed ring.
+      const rings = [];
+      for (let e = 0; e < NE; e++) {
+        if (nb1[e] < 0 || seen[e]) continue;
+        const chain = [];
+        let cur = e, prev = -1;
+        while (cur >= 0 && !seen[cur]) {
+          seen[cur] = 1; chain.push(cur);
+          const a = nb1[cur], b = nb2[cur];
+          cur = (a !== prev && a >= 0 && !seen[a]) ? a
+              : ((b !== prev && b >= 0 && !seen[b]) ? b : -1);
+          prev = chain[chain.length - 1];
+        }
+        if (chain.length < 3) continue;
+        const ring = [];
+        for (const id of chain) {
+          const h = id < NH;
+          const q = h ? id : id - NH;
+          const r0 = (q / ncol) | 0, c0 = q % ncol;
+          const r1 = h ? r0 : r0 + 1, c1 = h ? c0 + 1 : c0;
+          const v0 = val[r0 * ncol + c0], v1 = val[r1 * ncol + c1];
+          const la0 = lats[r0], lo0 = lons[c0], la1 = lats[r1], lo1 = lons[c1];
+          let t = (v1 === v0) ? 0.5 : (level - v0) / (v1 - v0), jump = 0;
+          // Refinement. Only between real nodes: on the frame there is no
+          // function to refine, and that part of the ring falls outside the
+          // map anyway.
+          const real = r0 >= 1 && r0 <= nlat + 2 && c0 >= 1 && c0 <= nlon + 2
+                    && r1 >= 1 && r1 <= nlat + 2 && c1 >= 1 && c1 <= nlon + 2;
+          if (real) {
+            const kh = [kAt[r0 * ncol + c0], kAt[r1 * ncol + c1]];
+            const fOf = k => u => FLD(la0 + u * (la1 - la0), lo0 + u * (lo1 - lo0), k) - level;
+            const run = f => {
+              let a = 0, b = 1, fa = f(0);
+              if ((fa < 0) === (f(1) < 0)) return null;
+              for (let it = 0; it < 14; it++) {
+                const u = (a + b) / 2, fu = f(u);
+                if ((fa < 0) === (fu < 0)) { a = u; fa = fu; } else { b = u; }
+              }
+              const u = (a + b) / 2;
+              return { u, res: Math.abs(f(u)) };
+            };
+            // No sign change does not mean there is none: the time hint can
+            // pull the value at one end below the level. Before giving up,
+            // the full sweep.
+            let r = run(fOf(kh)) || run(fOf(-1));
+            // A large residual at the end means one of two things, and they
+            // have to be told apart before drawing. Either the time hint did
+            // not hold in the middle of the edge -- it happens: the ends
+            // bring it from their own cell and in between another hump can
+            // govern -- or the boundary really is a jump. The cut is redone
+            // with the full sweep, which depends on no hint; if it still
+            // does not close, it is a jump and gets marked. A few dozen
+            // edges per eclipse, so the full sweep there does not show.
+            if (r && r.res > 1e-3) {
+              const r2 = run(fOf(-1));
+              if (r2) r = r2;
+              if (r.res > 1e-3) { jump = 1; jumps++; }
+            }
+            if (r) t = r.u; else fallbacks++;
+          }
+          ring.push(jump ? [la0 + t * (la1 - la0), lo0 + t * (lo1 - lo0), 0, 1, la0, lo0, la1, lo1]
+                         : [la0 + t * (la1 - la0), lo0 + t * (lo1 - lo0)]);
+        }
+        vertices += ring.length;
+        // Smooth BEFORE subdividing. The other way round, the subdivision has
+        // already seeded the zigzag with intermediate points the smoothing
+        // does not touch -- it only moves jump vertices -- and the tooth
+        // survives, held up by its own children.
+        const sm = smoothJumps(ring);
+        rings.push(tolKm > 0 ? refineRing(sm, level) : sm);
+      }
+      // Drop the unrefinable-segment marker: it is densify() scaffolding and
+      // has no business in the result, where Leaflet would read it as an
+      // altitude.
+      const clean = rings.map(r => r.map(q => [q[0], q[1]]));
+      if (job.vis) visOut.push.apply(visOut, clean); else out.push(clean);
+    }
+    }
+    let total = 0;
+    for (const rr of out) for (const r of rr) total += r.length;
+    for (const r of visOut) total += r.length;
+    // The grid is NOT returned. It is 938 kB of Float32 and Int16 per eclipse
+    // -- the obscuration field, the visibility field and their two time-hint
+    // rasters -- and nothing has ever read it off this result: the contour
+    // is what everything draws, and a caller that wants the raster asks
+    // `obscurationGrid` for it and can hand it back through `opts.grid`.
+    // Returning it made every cached eclipse carry a megabyte it never
+    // consulted, and made the worker clone that megabyte across the thread
+    // boundary on every change of eclipse.
+    return { levels, rings: out, visible: visOut, vertices: total, coarse: vertices,
+             fallbacks, jumps };
+  }
+
+  return { evaluate, axisPoint, project, local, observer, geom, altaz, utcOf,
+           maxObscuration, obsAt, visMargin, visAt, contours, BAND_LEVELS,
+           obscuration, magnitude, centralLine, limits,
+           shadowOutline, shadowRegion, obscurationGrid };
+})();
+
+if (typeof module !== 'undefined') module.exports = Bess;
