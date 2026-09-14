@@ -87,7 +87,13 @@ const Radio = (() => {
   // int_0^{pi/2} cos^a(t) 2 pi sin t cos t dt = 2 pi / (a + 2).
   function fluxObscuration(sep, rs, rm, alpha, n = 800) {
     if (sep >= rs + rm) return 0;
-    if (sep <= Math.abs(rm - rs)) return rm >= rs ? 1 : (rm * rm) / (rs * rs);
+    // Moon larger and inside: everything is hidden. Moon smaller and inside is
+    // annularity, and it goes through the integral like any other overlap:
+    // the dark disc sits on the bright centre and hides more flux than area.
+    // Returning the area ratio there made the light jump up at second
+    // contact, from 0.8616 to 0.8275 of the flux hidden at Sevilla on
+    // 2028-01-26.
+    if (sep <= rm - rs) return 1;
     const h = (Math.PI / 2) / n;
     let acc = 0;
     for (let k = 0; k <= n; k++) {
@@ -126,7 +132,12 @@ const Radio = (() => {
     if (sep >= rs + rm) return cl(2 * rs);
     const short = Math.max(rs + sep - rm, 0);
     const c = Math.min(1, Math.max(-1, (sep * sep + rs * rs - rm * rm) / (2 * sep * rs)));
-    const long = 2 * rs * Math.sin(Math.acos(c));
+    // The chord joining the horns is the longest dimension only once the
+    // horns have passed the Sun's centre (c < 0). Before that the Sun's full
+    // diameter across the line of centres is still in view. The chord alone
+    // halved the subtense at first contact, 9.18 to 5.33 mrad for a bite of
+    // 0.005 %, and the thermal ratio with it, 1.30 to 0.75.
+    const long = c > 0 ? 2 * rs : 2 * rs * Math.sin(Math.acos(c));
     return 0.5 * (cl(short) + cl(long));
   }
 
@@ -183,6 +194,13 @@ const Radio = (() => {
       const zetaObs = (g.L2 - e.l2) / -B.tan_f2;
       const rMoonAng = B.k2_umbra / (zMoon - zetaObs);
       const rSunAng = rMoonAng * (g.L1 + g.L2) / (g.L1 - g.L2);
+      // g.m, like (L1' +/- L2')/2, is a length on the fundamental plane in
+      // Earth radii, and the crescent's subtense wants an angle. The factor
+      // that turns the Moon's radius on the plane into its angular radius
+      // turns the separation as well, so the two discs meet at exactly the
+      // contacts the plane gives. Passing g.m straight in read every partial
+      // phase as an uncovered disc and totality as a crescent.
+      const sepAng = g.m * rMoonAng / ((g.L1 - g.L2) / 2);
 
       const dni0 = spectrl2(90 - altR, am, atm, doy);
       // Flux obscuration is expensive, and alpha(lambda) is smooth, so it is
@@ -201,7 +219,7 @@ const Radio = (() => {
         wV[j] = dni[j] * T.V_lambda[j];
         wR0[j] = dni0[j] * T.R_lambda[j];
       }
-      const alphaC = crescentSubtense(g.m, rSunAng, rMoonAng);
+      const alphaC = crescentSubtense(sepAng, rSunAng, rMoonAng);
       const E_R = trapz(wR, lam), E_R0 = trapz(wR0, lam);
 
       // The retinal thermal hazard is a RADIANCE, and radiance is invariant
@@ -253,7 +271,11 @@ const Radio = (() => {
       // there cannot be seen at all -- which is how the thermal branch spent a
       // while dividing by the eclipsed irradiance instead of the uneclipsed
       // one. The Moon is not part of the filter and it will move.
-      filter_blue: T.icnirp.E_B_LIMIT / Math.max(worstBlue.E_blue, 1e-30),
+      // The blue branch is taken at the dilated pupil, like stare_7mm: the
+      // ICNIRP limit assumes 3 mm, and a pupil opened to 7 mm takes (7/3)^2,
+      // 5.4 times, the retinal dose. At 3 mm the figure let that much more in.
+      filter_blue: T.icnirp.E_B_LIMIT / Math.max(worstBlue.E_blue
+        * (T.eye.pupil_dark_mm / T.icnirp.pupil_icnirp_mm) ** 2, 1e-30),
       filter_thermal: thermalLimitRadiance(worstTherm.alpha_sun_rad)
         * (Math.PI * worstTherm.alpha_sun_rad ** 2 / 4)
         / Math.max(worstTherm.E_therm0, 1e-30),
