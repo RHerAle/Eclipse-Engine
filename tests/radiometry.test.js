@@ -28,7 +28,12 @@ for (const c of [
   { sep: 1.5, rs: 1, rm: 1.02, alpha: 0.6, O: 0.136653089618609 },
   { sep: 0.05, rs: 1, rm: 1.02, alpha: 0.6, O: 0.9942528601717566 },
   { sep: 1.95, rs: 1, rm: 1.02, alpha: 0.6, O: 0.004005105577399564 },
-  { sep: 1.0, rs: 1, rm: 0.98, alpha: 0.75, O: 0.38636778403920463 }])
+  { sep: 1.0, rs: 1, rm: 0.98, alpha: 0.75, O: 0.38636778403920463 },
+  // Annularity, the Moon inside a larger Sun. The area hidden is 0.81 and
+  // 0.9025; the flux hidden is more, because the Moon sits on the bright
+  // centre. The port returned the area ratio here.
+  { sep: 0.05, rs: 1, rm: 0.9, alpha: 0.6, O: 0.8819701368410863 },
+  { sep: 0, rs: 1, rm: 0.95, alpha: 0.6, O: 0.9515039907779316 }])
   rel(Radio.fluxObscuration(c.sep, c.rs, c.rm, c.alpha), c.O, 2e-3,
       `flux obscuration sep=${c.sep} alpha=${c.alpha}`);
 
@@ -154,6 +159,12 @@ ok(Radio.staringTime(0.5, 7) < Infinity, 'una pupila de 7 mm tiene que acotar do
      'en totalidad la subtensa si es cero');
 }
 
+// A bite at first contact cannot halve the source: the subtense has to join
+// the uncovered disc. The horns' chord taken as the longest dimension from the
+// start gave 5.3 mrad for a bite of 0.005 %.
+rel(Radio.crescentSubtense(4.6e-3 + 4.7e-3 - 1e-9, 4.6e-3, 4.7e-3), 2 * 4.6e-3, 1e-6,
+    'subtensa continua en el primer contacto');
+
 // 5. End to end: the whole run at the study site, with the site's own measured
 //    atmosphere, against what the manuscript published for it.
 const CATALOGUE = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/eclipses.json'))).eclipses;
@@ -165,9 +176,45 @@ rel(R.first.alt_refr, 15.263, 3e-3, 'altura refractada al inicio de la ventana')
 rel(R.first.dni0, 500.96, 1e-2, 'DNI sin eclipse al inicio');
 rel(R.thermal_ratio, 1.3400, 2e-2, 'razon termica peor del evento');
 rel(R.stare_3mm, 3.9399, 3e-2, 'fijacion hasta la dosis limite, pupila 3 mm');
-rel(R.filter_needed, 0.039399, 3e-2, 'transmitancia de filtro exigida');
+// The manuscript's 0.039399 was taken at a 3 mm pupil; the blue branch now
+// governs at 7 mm, which asks (3/7)^2 of it.
+rel(R.filter_needed, 0.039399 * (3 / 7) ** 2, 3e-2, 'transmitancia de filtro exigida');
 ok(R.max_obsc.obsc_flux > 0.9999, `obscuracion de flujo maxima ${R.max_obsc.obsc_flux}`);
 ok(R.stare_7mm < R.stare_3mm, 'una pupila dilatada tiene que acortar el tiempo');
+
+// The crescent's subtense along the whole run, against the manuscript's own
+// geometry at the same instant. run() once handed g.m, a length on the
+// fundamental plane in Earth radii, to a function that takes radians: every
+// partial phase read as an uncovered disc, 9.18 mrad where the manuscript has
+// 5.3 to 6.2, and totality as a crescent with a thermal ratio of 0.24. Every
+// check above this one falls before first contact and saw none of it.
+{
+  const secs = rows.map(r => r[col('seconds_from_max')]);
+  const lerp = (t, name) => {
+    let i = 1;
+    while (i < secs.length - 1 && secs[i] < t) i++;
+    const u = (t - secs[i - 1]) / (secs[i] - secs[i - 1]);
+    return rows[i - 1][col(name)] * (1 - u) + rows[i][col(name)] * u;
+  };
+  let worst = 0, inside = 0;
+  for (const s of R.series) {
+    const t = (s.t - R.loc.MAX.t) * 3600;
+    if (s.below || t < secs[0] || t > secs[secs.length - 1]) continue;
+    const want = Radio.crescentSubtense(lerp(t, 'sep_arcsec') * A2R,
+      lerp(t, 'r_sun_arcsec') * A2R, lerp(t, 'r_moon_arcsec') * A2R);
+    worst = Math.max(worst, Math.abs(s.alpha_rad - want));
+    if (s.obsc_area >= 1) {
+      inside++;
+      ok(s.alpha_rad === 0 && s.thermal_ratio === 0,
+         `en totalidad no queda creciente: ${(s.alpha_rad * 1e3).toFixed(2)} mrad, razon ${s.thermal_ratio.toFixed(3)}`);
+    }
+  }
+  ok(inside > 0, 'la serie tiene que pasar por la totalidad');
+  // The elements and the DE440s chain put the contacts about a second apart,
+  // which is 0.12 mrad six seconds out from C2; the defect was 3 mrad and more
+  // through the whole partial phase.
+  ok(worst < 3e-4, `subtensa del creciente a lo largo de la serie: ${(worst * 1e3).toFixed(4)} mrad de desvio`);
+}
 
 // The retinal radiance comes from the UNECLIPSED beam over the full solar
 // subtense. Swapping it for the eclipsed one left both suites green, and it is
@@ -188,19 +235,24 @@ ok(R.stare_7mm < R.stare_3mm, 'una pupila dilatada tiene que acortar el tiempo')
   const w = R.worst_thermal;
   const limitIrr = Radio.thermalLimitRadiance(w.alpha_sun_rad) * (Math.PI * w.alpha_sun_rad ** 2 / 4);
   rel(R.filter_thermal, limitIrr / w.E_therm0, 1e-12, 'rama termica de la transmitancia');
-  rel(R.filter_blue, T.icnirp.E_B_LIMIT / R.worst_blue.E_blue, 1e-12, 'rama azul');
+  rel(R.filter_blue, T.icnirp.E_B_LIMIT / (R.worst_blue.E_blue
+      * (T.eye.pupil_dark_mm / T.icnirp.pupil_icnirp_mm) ** 2), 1e-12, 'rama azul, pupila dilatada');
   rel(R.filter_needed, Math.min(R.filter_blue, R.filter_thermal), 1e-12, 'transmitancia exigida');
   ok(w.E_therm0 >= w.E_therm, 'el haz sin eclipsar no puede ser mas debil que el eclipsado');
 }
 
 // At the study site the worst thermal instant happens to be un-eclipsed, so
 // E_therm0 == E_therm there and the check above cannot tell the two apart.
-// 2027-08-02 at 20 N 30 E is the opposite case: its worst thermal instant is
-// already 83 % obscured, so the two differ by a factor of six.
+// 2028-01-26 at 0 N 55 W is the opposite case, for a reason that holds without
+// asking the port: annularity falls near noon with the Sun at 67 degrees, the
+// ring keeps the full subtense, so the hazard inside annularity is the
+// uneclipsed one at the day's highest Sun while the flux is a tenth. The site
+// used here before, 2027-08-02 at 20 N 30 E, had its eclipsed worst instant
+// only because the crescent was measured in Earth radii.
 {
-  const el = CAT('2027-08-02');
-  const R2 = Radio.run(el, 20, 30, 0, T.atmospheres.g173);
-  ok(R2, '2027-08-02 en 20 N 30 E ve el eclipse');
+  const el = CAT('2028-01-26');
+  const R2 = Radio.run(el, 0, -55, 0, T.atmospheres.g173);
+  ok(R2, '2028-01-26 en 0 N 55 O ve el eclipse');
   const w = R2.worst_thermal;
   ok(w.E_therm0 > 3 * w.E_therm,
      `este punto tiene que discriminar: E0 ${w.E_therm0.toFixed(1)} vs E ${w.E_therm.toFixed(1)}`);
