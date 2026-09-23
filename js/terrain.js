@@ -29,6 +29,12 @@ const Terrain = (() => {
   // their documented format.
   const TILES = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium';
 
+  // How long any one request here is waited for: a tile, or the Overpass
+  // query. One that never answered used to leave the query pending for the
+  // rest of the visit, under a label saying it was downloading; now it fails
+  // after this, and the caller can say so and offer to ask again.
+  const WAIT_MS = 30000;
+
   // The attribution document IS the licence: the AWS Open Data registry entry
   // for this bucket names
   // github.com/tilezen/joerd/blob/master/docs/attribution.md as the licence,
@@ -74,29 +80,44 @@ const Terrain = (() => {
   const tiles = new Map();
   let footprint = 0;                     // bytes fetched this session
 
+  /* A tile that fails to load, or has not arrived after WAIT_MS, fails the
+     query, and the cache forgets it so that the next query asks for it again.
+     It used to resolve to nothing, which the sampler read as sea level: under
+     the ridge at Bulnes, 923 m up, the page answered "0 m, in view", and went
+     on answering it for the rest of the visit, because what the cache kept
+     was the failure. */
   const load = (z, x, y) => {
     const key = z + '/' + x + '/' + y;
     let hit = tiles.get(key);
     if (hit) return hit;
-    hit = new Promise(resolve => {
+    hit = new Promise((resolve, reject) => {
       const img = new Image();
+      const timer = setTimeout(() => {
+        img.onload = img.onerror = null;
+        img.src = '';                      // and stop the download
+        reject(new Error('elevation tile ' + key + ': no answer'));
+      }, WAIT_MS);
       img.crossOrigin = 'anonymous';
       img.onload = () => {
-        const cv = document.createElement('canvas');
-        cv.width = cv.height = 256;
-        const g = cv.getContext('2d', { willReadFrequently: true });
-        g.drawImage(img, 0, 0);
-        const px = g.getImageData(0, 0, 256, 256).data;
-        const out = new Float32Array(256 * 256);
-        for (let i = 0, j = 0; i < out.length; i++, j += 4)
-          out[i] = px[j] * 256 + px[j + 1] + px[j + 2] / 256 - 32768;
-        footprint += 256 * 256 * 4;
-        resolve(out);
+        clearTimeout(timer);
+        try {
+          const cv = document.createElement('canvas');
+          cv.width = cv.height = 256;
+          const g = cv.getContext('2d', { willReadFrequently: true });
+          g.drawImage(img, 0, 0);
+          const px = g.getImageData(0, 0, 256, 256).data;
+          const out = new Float32Array(256 * 256);
+          for (let i = 0, j = 0; i < out.length; i++, j += 4)
+            out[i] = px[j] * 256 + px[j + 1] + px[j + 2] / 256 - 32768;
+          footprint += 256 * 256 * 4;
+          resolve(out);
+        } catch (e) { reject(e); }
       };
-      img.onerror = () => resolve(null);
+      img.onerror = () => { clearTimeout(timer); reject(new Error('elevation tile ' + key + ': failed')); };
       img.src = `${TILES}/${z}/${x}/${y}.png`;
     });
     tiles.set(key, hit);
+    hit.catch(() => { if (tiles.get(key) === hit) tiles.delete(key); });
     return hit;
   };
 
@@ -120,9 +141,10 @@ const Terrain = (() => {
   }
 
   // Elevation sampler over a rectangle of tiles, bilinear between posts.
-  // Missing tiles read as sea level rather than as a hole: an ocean tile that
-  // failed to load and an ocean tile that loaded look the same from here, and
-  // a hole would show up as a notch in the skyline that is not there.
+  // Every tile of the block has to arrive, or the query fails with it: the
+  // service covers the whole Earth, sea floor included, so a tile that did not
+  // load is a failure and not an ocean. Only rows past the Mercator limit,
+  // which the service does not have, read as sea level.
   async function sampler(lat, lon, radiusM) {
     const z = zoomFor(lat, radiusM), n = 2 ** z;
     const mPerPx = 40075016.7 * Math.cos(lat * D2R) / (n * 256);
@@ -263,10 +285,16 @@ const Terrain = (() => {
   async function buildings(lat, lon, radiusM) {
     radiusM = radiusM || 400;
     const q = `[out:json][timeout:25];way["building"](around:${radiusM},${lat},${lon});out geom;`;
-    const r = await fetch('https://overpass-api.de/api/interpreter',
-                          { method: 'POST', body: q });
-    if (!r.ok) throw new Error('overpass ' + r.status);
-    const d = await r.json();
+    // The server's own limit is the 25 s in the query; this one covers a
+    // server that never gets to apply it.
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), WAIT_MS);
+    let d;
+    try {
+      const r = await fetch('https://overpass-api.de/api/interpreter',
+                            { method: 'POST', body: q, signal: ac.signal });
+      if (!r.ok) throw new Error('overpass ' + r.status);
+      d = await r.json();
+    } finally { clearTimeout(timer); }
     const out = [];
     let total = 0, guessed = 0;
     let withHeight = 0;

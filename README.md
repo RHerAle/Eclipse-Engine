@@ -21,6 +21,7 @@ DE440s ephemeris; `data/spectral.json` holds the spectral tables.
     node tests/besselian.test.js
     node tests/radiometry.test.js
     node tests/stabilise.test.js
+    node tests/terrain.test.js
 
 Node 22, nothing to install. The reference values in `tests/reference/` come
 from the project's Python chain, which computes the same quantities
