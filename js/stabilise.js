@@ -26,12 +26,17 @@
  * One thing the Python version does not have to do: guess the scale. It was
  * written for one camera and one framing, with the solar radius hard-coded at
  * 110 px. Here the footage can be anything, so the radius is measured from the
- * first frame that has a usable Sun in it and refined from then on.
+ * first frame that locks and refined from then on. Two more of its constants
+ * are that camera's and are measured here too: the limb threshold, because a
+ * Sun filmed through a filter is well exposed and never clips, and the
+ * distance at which a fit counts as an outlier, which is a solar radius.
  */
 const Stab = (() => {
   'use strict';
 
   const THR_PHOT = 200;    // the photosphere saturates; nothing else gets near
+  const SAT = 250;         // a disc that reaches this is clipped, and THR_PHOT applies
+  const MIN_CONTRAST = 40; // levels between the sky and an unclipped disc before a fit
   const BRIGHT_SKY = 30;   // median level above which the sky, not the Sun, is lit
   const CORONA_THR = 60;   // closes the corona ring once the camera has opened up
   const MIN_PIX = 150;     // lit pixels before a fit is worth attempting
@@ -52,6 +57,28 @@ const Stab = (() => {
       g[i] = r > gr ? (r > b ? r : b) : (gr > b ? gr : b);
     }
     return g;
+  }
+
+  // The sky's level, the disc's, and the threshold that finds the limb between
+  // them, from one histogram: the frames are large and a sort is not worth it.
+  // The sky is the median; the disc is the level MIN_PIX pixels reach, so a
+  // few hot pixels do not count as a Sun.
+  //
+  // A clipped disc keeps THR_PHOT: the original's reason holds, since past the
+  // clip the photosphere blooms and nothing else in frame comes near it. A
+  // disc that never clips is cut at half its height over the sky, which is
+  // where a blurred step has its edge. Cut at THR_PHOT instead, a well exposed
+  // Sun never locked, and one peaking at 230 traced an isophote of limb
+  // darkening at 25 px instead of its 40 px limb.
+  function levels(g) {
+    const hist = new Int32Array(256);
+    for (let i = 0; i < g.length; i++) hist[g[i]]++;
+    let acc = 0, sky = 0, top = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= g.length / 2) { sky = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= MIN_PIX) { top = v; break; } }
+    const thr = top >= SAT ? THR_PHOT : top - sky >= MIN_CONTRAST ? (sky + top) / 2 : null;
+    return { sky, top, thr };
   }
 
   // Box average by an integer factor, which is what INTER_AREA does when the
@@ -295,24 +322,40 @@ const Stab = (() => {
   }
 
   // Dark pixels the border cannot reach: during totality, the Moon's disk.
+  //
+  // Flooded inside the box around the bright pixels only, from its rim. A dark
+  // pixel outside that box reaches the border in a straight line, and so does
+  // every dark pixel on the rim, so the answer is the same as flooding the
+  // whole frame. Flooding the whole frame was most of the tracker's time on
+  // every frame, and at 960 px it alone decided whether the measuring pass
+  // kept up with playback.
   function enclosed(g, w, h, thr) {
-    const bright = new Uint8Array(w * h);
-    for (let i = 0; i < bright.length; i++) bright[i] = g[i] >= thr ? 1 : 0;
-    const seen = new Uint8Array(w * h);
-    const stack = [];
-    const push = i => { if (!seen[i] && !bright[i]) { seen[i] = 1; stack.push(i); } };
-    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
-    for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
-    while (stack.length) {
-      const i = stack.pop(), x = i % w, y = (i / w) | 0;
-      if (x > 0) push(i - 1);
-      if (x < w - 1) push(i + 1);
-      if (y > 0) push(i - w);
-      if (y < h - 1) push(i + w);
+    let x0 = w, x1 = -1, y0 = h, y1 = -1;
+    for (let y = 0, i = 0; y < h; y++)
+      for (let x = 0; x < w; x++, i++)
+        if (g[i] >= thr) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+    if (x1 < 0) return { n: 0, cx: 0, cy: 0 };
+    x0 = Math.max(0, x0 - 1); x1 = Math.min(w - 1, x1 + 1);
+    y0 = Math.max(0, y0 - 1); y1 = Math.min(h - 1, y1 + 1);
+    const seen = new Uint8Array(w * h), stack = new Int32Array((x1 - x0 + 1) * (y1 - y0 + 1));
+    let sp = 0;
+    const push = i => { if (!seen[i] && g[i] < thr) { seen[i] = 1; stack[sp++] = i; } };
+    for (let x = x0; x <= x1; x++) { push(y0 * w + x); push(y1 * w + x); }
+    for (let y = y0; y <= y1; y++) { push(y * w + x0); push(y * w + x1); }
+    while (sp) {
+      const i = stack[--sp], x = i % w, y = (i - x) / w;
+      if (x > x0) push(i - 1);
+      if (x < x1) push(i + 1);
+      if (y > y0) push(i - w);
+      if (y < y1) push(i + w);
     }
     let n = 0, sx = 0, sy = 0;
-    for (let i = 0; i < bright.length; i++)
-      if (!bright[i] && !seen[i]) { n++; sx += i % w; sy += (i / w) | 0; }
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0, i = y * w + x0; x <= x1; x++, i++)
+        if (g[i] < thr && !seen[i]) { n++; sx += x; sy += y; }
     return { n, cx: sx / Math.max(n, 1), cy: sy / Math.max(n, 1) };
   }
 
@@ -325,12 +368,8 @@ const Stab = (() => {
   // camera's automatic exposure opens up.
   function locate(g, w, h, r, centre, scale) {
     const band = [0.6 * r, 1.7 * r];
-    // Median by histogram: the frames are large and a sort is not worth it.
-    const hist = new Int32Array(256);
-    for (let i = 0; i < g.length; i++) hist[g[i]]++;
-    let acc = 0, med = 0;
-    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= g.length / 2) { med = v; break; } }
-    if (med > BRIGHT_SKY) {
+    const lv = levels(g);
+    if (lv.sky > BRIGHT_SKY) {
       const res = darkDisk(g, w, h, r, centre, scale, 30);
       return res ? { cx: res.cx, cy: res.cy, r, regime: 2 } : null;
     }
@@ -339,7 +378,8 @@ const Stab = (() => {
       const req = Math.sqrt(hole.n / Math.PI);
       if (req > band[0] && req < band[1]) return { cx: hole.cx, cy: hole.cy, r: req, regime: 1 };
     }
-    const res = fitLimb(g, w, h, THR_PHOT, r, centre, band);
+    if (lv.thr === null) return null;
+    const res = fitLimb(g, w, h, lv.thr, r, centre, band);
     return res ? { cx: res.cx, cy: res.cy, r: res.r, regime: 0 } : null;
   }
 
@@ -347,17 +387,62 @@ const Stab = (() => {
   // the lit region is the solar DIAMETER whatever the phase -- a crescent is
   // thin but it still spans the limb from horn to horn -- which is a good
   // enough seed for the fit to take over.
+  //
+  // The box of the largest lit REGION, not of every lit pixel. A reflection or
+  // a street light anywhere else in the frame stretched the box across the
+  // gap to it: one spot in the first frame measured the Sun at 128 px instead
+  // of 40, and since that radius put the true one outside every later fit's
+  // band, the whole clip failed to lock.
   function bootstrap(g, w, h) {
-    let x0 = w, x1 = -1, y0 = h, y1 = -1, n = 0;
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++)
-        if (g[y * w + x] >= THR_PHOT) {
-          n++;
-          if (x < x0) x0 = x; if (x > x1) x1 = x;
-          if (y < y0) y0 = y; if (y > y1) y1 = y;
-        }
-    if (n < MIN_PIX) return null;
-    return Math.max(x1 - x0, y1 - y0) / 2;
+    const { thr } = levels(g);
+    if (thr === null) return null;
+    const seen = new Uint8Array(w * h), stack = new Int32Array(w * h);
+    let sp = 0, best = 0, ext = 0;
+    const push = i => { if (!seen[i] && g[i] >= thr) { seen[i] = 1; stack[sp++] = i; } };
+    for (let s = 0; s < g.length; s++) {
+      if (seen[s] || g[s] < thr) continue;
+      let n = 0, x0 = w, x1 = -1, y0 = h, y1 = -1;
+      push(s);
+      while (sp) {
+        const i = stack[--sp], x = i % w, y = (i - x) / w;
+        n++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x > 0) push(i - 1);
+        if (x < w - 1) push(i + 1);
+        if (y > 0) push(i - w);
+        if (y < h - 1) push(i + w);
+      }
+      if (n > best) { best = n; ext = Math.max(x1 - x0, y1 - y0); }
+    }
+    return best < MIN_PIX ? null : ext / 2;
+  }
+
+  // tools/stab_solar.py's measure(), one frame at a time, for a caller that is
+  // handed frames rather than reading them: `t` is the frame's time in
+  // seconds, and the budgets count frames of 25 fps, as the original does.
+  // Returns the fit, in the frame's pixels, or null for a frame without one.
+  //
+  // The radius the bootstrap measures is only believed once a fit has locked
+  // with it. Kept from the first frame with anything bright in it, one
+  // unlucky frame decided the scale of the whole clip, and nothing later
+  // could correct it.
+  function tracker() {
+    let r = null, prev = null, last = -Infinity;
+    return (g, w, h, t) => {
+      const gap = (t - last) * 25;
+      if (gap > REACQUIRE) prev = null;          // too stale to seed with; search again
+      const r0 = r !== null ? r : bootstrap(g, w, h);
+      if (r0 === null) return null;
+      const res = locate(g, w, h, r0, prev, 2);
+      // A centre that moves further than the budget for the elapsed time is
+      // lock loss, not motion. The budget scales with the gap, so a fit after
+      // a few dropped frames is not rejected merely for having had time to move.
+      if (!res || (prev && Math.hypot(res.cx - prev[0], res.cy - prev[1]) > JUMP_MAX * Math.max(1, gap)))
+        return null;
+      prev = [res.cx, res.cy]; r = res.r; last = t;
+      return res;
+    };
   }
 
   /* ---- the whole track ------------------------------------------------- */
@@ -365,14 +450,29 @@ const Stab = (() => {
   // No smoothing beyond outlier rejection, on purpose. The tripod shake is real
   // motion and removing it is the point; smoothing the measured track would
   // subtract a smoothed position and leave the shake in the output.
+  //
+  // What counts as an outlier is a fit more than a solar radius from the
+  // median of the frames around it: a clean fit that far off has found some
+  // other disc. The fits get here having already passed the fit's own checks
+  // and the jump budget, and every one of them was good. The original's 12 px
+  // is its camera's scale, a ninth of its 110 px Sun, and here it threw away
+  // exactly the fits worth keeping: every frame of a 30 px knock, and each
+  // frame of hand shake that strayed 12 px, whose place the interpolation then
+  // filled with the shake itself. 12 px stays for a track that carries no
+  // radius. Returns null when fewer than two fits survive.
   function clean(track, medWin, maxDev) {
-    medWin = medWin || 9; maxDev = maxDev || 12;
+    medWin = medWin || 9;
+    if (!maxDev) {
+      const rs = track.filter(s => s && s.r > 0).map(s => s.r).sort((a, b) => a - b);
+      maxDev = rs.length ? rs[rs.length >> 1] : 12;
+    }
     const n = track.length, out = [];
     for (const key of ['cx', 'cy']) {
       const v = new Float64Array(n);
       const good = new Uint8Array(n);
       for (let i = 0; i < n; i++) { good[i] = track[i] ? 1 : 0; if (track[i]) v[i] = track[i][key]; }
-      let filled = interp(v, good, n);
+      const filled = interp(v, good, n);
+      if (!filled) return null;
       const med = new Float64Array(n), half = medWin >> 1, buf = [];
       for (let i = 0; i < n; i++) {
         buf.length = 0;
@@ -382,7 +482,9 @@ const Stab = (() => {
       }
       const good2 = new Uint8Array(n);
       for (let i = 0; i < n; i++) good2[i] = (good[i] && Math.abs(filled[i] - med[i]) < maxDev) ? 1 : 0;
-      out.push(interp(v, good2, n));
+      const kept = interp(v, good2, n);
+      if (!kept) return null;
+      out.push(kept);
     }
     return { cx: out[0], cy: out[1] };
   }
@@ -426,9 +528,9 @@ const Stab = (() => {
     return { w: ow, h: oh, tx: ow / 2, ty: oh / 2 };
   }
 
-  return { grey, locate, bootstrap, clean, fitWindow, fitLimb, darkDisk, coarse,
-           kasa, enclosed, shrink,
-           K: { THR_PHOT, BRIGHT_SKY, CORONA_THR, JUMP_MAX, REACQUIRE, MIN_PIX } };
+  return { grey, levels, locate, bootstrap, tracker, clean, fitWindow, fitLimb, darkDisk,
+           coarse, kasa, enclosed, shrink,
+           K: { THR_PHOT, SAT, MIN_CONTRAST, BRIGHT_SKY, CORONA_THR, JUMP_MAX, REACQUIRE, MIN_PIX } };
 })();
 
 if (typeof module !== 'undefined') module.exports = Stab;

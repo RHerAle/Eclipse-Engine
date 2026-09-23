@@ -160,5 +160,154 @@ function gauss(im, sigma) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// From here on the cases are the port's own: what it has to measure because
+// the footage can be anything, where the original could hard-code its one
+// camera. Each was shown to fail with its defect put back; the mutation is
+// named beside it.
+// ---------------------------------------------------------------------------
+
+// A disc with limb darkening, 1 - u(1 - mu), over a dark sky.
+function sun(im, cx, cy, r, peak, u) {
+  for (let y = 0; y < im.h; y++)
+    for (let x = 0; x < im.w; x++) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d > r) continue;
+      const mu = Math.sqrt(1 - (d / r) ** 2);
+      im.d[y * im.w + x] = Math.round(8 + (peak - 8) * (1 - u * (1 - mu)));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. A Sun that never clips. Filmed through a filter the disc is well exposed
+//    and nowhere near white, and THR_PHOT alone found no limb at all at a
+//    peak of 180, and at 230 traced the 200 isophote of the limb darkening at
+//    25 px instead of the 40 px limb. Mutation: `levels` returning THR_PHOT
+//    whatever the peak. Without the contrast floor, the noise frame locks.
+// ---------------------------------------------------------------------------
+{
+  const R = 40;
+  for (const [peak, u] of [[180, 0.6], [190, 0], [230, 0.6], [255, 0]]) {
+    const im = img(400, 300, 8);
+    sun(im, 190, 150, R, peak, u);
+    const r0 = Stab.bootstrap(im.d, im.w, im.h);
+    ok(r0 !== null && Math.abs(r0 - R) < 0.15 * R,
+       `peak ${peak}: bootstrap estimates ${r0 === null ? 'nothing' : r0.toFixed(1)}`);
+    const res = r0 === null ? null : Stab.locate(im.d, im.w, im.h, r0, null, 2);
+    ok(res && Math.hypot(res.cx - 190, res.cy - 150) < 1.0,
+       `peak ${peak}: the centre drifts ${res ? Math.hypot(res.cx - 190, res.cy - 150).toFixed(2) : 'nothing'} px`);
+    if (res) near(res.r, R, 2.0, `peak ${peak}: radius`);
+  }
+  // Compressed dark sky and nothing in it: no disc, so no fit.
+  const noise = img(400, 300);
+  let seed = 7;
+  for (let i = 0; i < noise.d.length; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; noise.d[i] = seed % 13; }
+  const ghost = Stab.locate(noise.d, noise.w, noise.h, 20, null, 2);
+  ok(ghost === null, `a frame of noise and no Sun gives a fit: ${JSON.stringify(ghost)}`);
+}
+
+// ---------------------------------------------------------------------------
+// 7. The scale comes from the largest lit region. The box of every lit pixel
+//    reached across the frame to any other light: one spot in the first frame
+//    measured the Sun at 128 px instead of 40. Mutation: the box of all lit
+//    pixels, as before.
+// ---------------------------------------------------------------------------
+{
+  const im = img(640, 360);
+  disc(im, 220, 180, 40, 255);
+  disc(im, 560, 60, 8, 255);
+  const r0 = Stab.bootstrap(im.d, im.w, im.h);
+  ok(r0 !== null && Math.abs(r0 - 40) < 6, `a spot beside the Sun: bootstrap estimates ${r0}`);
+}
+
+// ---------------------------------------------------------------------------
+// 8. The tracker believes a measured scale only once a fit has locked with it.
+//    A first frame whose largest lit region is not the Sun -- a bright strip
+//    of foreground here -- measured 320 px, locked nothing, and was kept: no
+//    later frame could lock either. Mutation: `if (r === null) r = bootstrap`.
+// ---------------------------------------------------------------------------
+{
+  const trk = Stab.tracker();
+  let worst = 0, locked = 0;
+  for (let i = 0; i < 5; i++) {
+    const im = img(640, 360);
+    disc(im, 220 + i, 180, 40, 255);
+    if (i === 0) for (let k = 300 * 640; k < 360 * 640; k++) im.d[k] = 255;
+    const res = trk(im.d, im.w, im.h, i / 25);
+    if (i === 0 || !res) continue;
+    locked++;
+    worst = Math.max(worst, Math.hypot(res.cx - (220 + i), res.cy - 180));
+  }
+  ok(locked === 4 && worst < 1, `after a bad first frame ${locked} of 4 frames lock, worst ${worst.toFixed(2)} px`);
+}
+
+// ---------------------------------------------------------------------------
+// 9. What counts as an outlier is a solar radius, not the original camera's
+//    12 px. A knock of 30 px for four frames is real motion and the whole
+//    point of stabilising; 12 px discarded every frame of it and put the
+//    shake back in by interpolation. A fit 780 px off is still discarded.
+//    Mutation: maxDev fixed at 12.
+// ---------------------------------------------------------------------------
+{
+  const truth = i => 100 + 0.5 * i + (i >= 20 && i < 24 ? 30 : 0);
+  const track = [];
+  for (let i = 0; i < 60; i++) track.push({ cx: truth(i), cy: 50, r: 40 });
+  track[40] = { cx: 900, cy: 50, r: 40 };
+  const c = Stab.clean(track);
+  let knock = 0, wild = Math.abs(c.cx[40] - truth(40));
+  for (let i = 20; i < 24; i++) knock = Math.max(knock, Math.abs(c.cx[i] - truth(i)));
+  ok(knock < 1e-6, `a 30 px knock is cleaned away by ${knock.toFixed(1)} px`);
+  ok(wild < 1e-6, `a fit 780 px off survives by ${wild.toFixed(1)} px`);
+}
+
+// ---------------------------------------------------------------------------
+// 10. Fewer than two fits left after the rejection is no track, and says so
+//     with null. It returned a hole instead, and the page indexed it and
+//     showed the visitor "Cannot read properties of null (reading '0')".
+//     Mutation: pushing the interpolation without checking it.
+// ---------------------------------------------------------------------------
+{
+  const track = [{ cx: 0, cy: 0, r: 40 }, { cx: 100, cy: 0, r: 40 }];
+  for (let i = 0; i < 8; i++) track.push(null);
+  ok(Stab.clean(track) === null, 'two fits that disagree by more than a radius make no track');
+}
+
+// ---------------------------------------------------------------------------
+// 11. The hole search floods only the box around the bright pixels. That has
+//     to give what flooding the whole frame gives, including for a dark bay
+//     that reaches the box's rim on one side only. Mutation: seeding the rim
+//     from its top and bottom rows alone.
+// ---------------------------------------------------------------------------
+{
+  const full = (g, w, h, thr) => {           // the whole-frame flood, as it was
+    const seen = new Uint8Array(w * h), st = [];
+    const push = i => { if (!seen[i] && g[i] < thr) { seen[i] = 1; st.push(i); } };
+    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+    while (st.length) {
+      const i = st.pop(), x = i % w, y = (i / w) | 0;
+      if (x > 0) push(i - 1); if (x < w - 1) push(i + 1);
+      if (y > 0) push(i - w); if (y < h - 1) push(i + w);
+    }
+    let n = 0, sx = 0, sy = 0;
+    for (let i = 0; i < g.length; i++) if (g[i] < thr && !seen[i]) { n++; sx += i % w; sy += (i / w) | 0; }
+    return { n, cx: sx / Math.max(n, 1), cy: sy / Math.max(n, 1) };
+  };
+  const shapes = {
+    ring: im => { disc(im, 150, 100, 70, 120); disc(im, 150, 100, 45, 0); },
+    edge: im => { disc(im, 20, 100, 70, 120); disc(im, 20, 100, 45, 0); },
+    bay: im => { disc(im, 150, 100, 70, 120); disc(im, 150, 100, 45, 0);
+                 for (let y = 90; y < 110; y++) for (let x = 60; x < 150; x++) im.d[y * im.w + x] = 0; },
+    crescent: im => { disc(im, 150, 100, 60, 255); disc(im, 175, 100, 60, 0); },
+    none: () => {}
+  };
+  for (const [name, draw] of Object.entries(shapes)) {
+    const im = img(300, 200); draw(im);
+    const a = Stab.enclosed(im.d, im.w, im.h, 60), b = full(im.d, im.w, im.h, 60);
+    ok(a.n === b.n && Math.abs(a.cx - b.cx) < 1e-9 && Math.abs(a.cy - b.cy) < 1e-9,
+       `enclosed(${name}): ${JSON.stringify(a)} against the whole-frame flood ${JSON.stringify(b)}`);
+  }
+}
+
 console.log(fails ? `${fails} FAILURES` : 'stabilise.js OK — matches tools/stab_solar.py');
 process.exit(fails ? 1 : 0);
