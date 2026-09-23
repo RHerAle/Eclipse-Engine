@@ -169,7 +169,7 @@ const Bess = (() => {
   function local(B, lat, lon, elev, span = 4.0, n = 4000) {
     const o = observer(B, lat, lon, elev);
     const step = 2 * span / n;
-    let best = null, gs = [];
+    let best = null, bestIn = null, gs = [];
     for (let i = 0; i <= n; i++) {
       const t = -span + i * step, g = geom(B, o, t);
       // The inner contact is |m| = |L2|. L2 is negative inside an umbra and
@@ -178,23 +178,67 @@ const Bess = (() => {
       // seconds everywhere while the magnitude still came out right.
       gs.push({ t, out: g.m - g.L1, inn: g.m - Math.abs(g.L2), mag: (g.L1 - g.m) / (g.L1 + g.L2) });
       if (!best || gs[i].mag > best.mag) best = gs[i];
+      if (!bestIn || gs[i].inn < bestIn.inn) bestIn = gs[i];
     }
-    if (best.mag <= 0) return null;
 
-    // Golden-section on the magnitude, which is monotone either side of maximum.
-    let a = best.t - step, b = best.t + step;
+    // Golden section for the minimum of f within one step either side of t,
+    // which is where the extremum of a smooth curve sampled at t has to be.
+    const argmin = (f, t) => {
+      let a = t - step, b = t + step;
+      for (let i = 0; i < 80; i++) {
+        const m1 = a + (b - a) * 0.382, m2 = a + (b - a) * 0.618;
+        if (f(m1) < f(m2)) b = m2; else a = m1;
+      }
+      return (a + b) / 2;
+    };
     const magAt = t => { const g = geom(B, o, t); return (g.L1 - g.m) / (g.L1 + g.L2); };
-    for (let i = 0; i < 80; i++) {
-      const m1 = a + (b - a) * 0.382, m2 = a + (b - a) * 0.618;
-      if (magAt(m1) > magAt(m2)) b = m2; else a = m1;
-    }
-    const tMax = (a + b) / 2, gm = geom(B, o, tMax);
-
     const fOf = key => t => { const g = geom(B, o, t); return key === 'out' ? g.m - g.L1 : g.m - Math.abs(g.L2); };
-    const roots = key => {
-      const f = fOf(key), r = [];
-      for (let i = 0; i < n; i++)
-        if ((gs[i][key] < 0) !== (gs[i + 1][key] < 0)) r.push(bisect(f, gs[i].t, gs[i + 1].t));
+
+    // Whether there is an eclipse here at all is decided at the REFINED
+    // maximum, not on the grid. The grid is 7.2 s, and at the very edge of the
+    // penumbra the whole eclipse is shorter than that: measured, 2 cm inside
+    // the limit of 2027-08-02 at 32.8 E the Sun is eclipsed for 0.9 s, no
+    // sample landed in it, and the site was told it saw nothing.
+    const tMax = argmin(t => -magAt(t), best.t), gm = geom(B, o, tMax);
+    if (!(gm.m < gm.L1)) return null;
+
+    /* The same goes for the central phase, and there it was not a matter of
+       centimetres. A total or annular phase shorter than the step can begin
+       and end between two samples and leave no sign change on the grid. It
+       then read as a partial eclipse at 100 % with a magnitude above 1: up to
+       some 0.4 km inside the limits of 2026-08-12, and at 17 of 215
+       central-line samples of the hybrid 2049-11-25, wherever the phase fell
+       between two samples.
+
+       So each pair of contacts is searched from an ANCHOR, an instant inside
+       the phase whenever there is one, and the grid cell that holds the
+       anchor is split at it. The outer pair's anchor is the maximum: where
+       the partial phase is short enough for the anchor to matter, the
+       magnitude is next to zero, and there its maximum and the least m - L1
+       are the same instant. The inner pair's is the least m - |L2| itself,
+       refined the same way, and NOT the maximum. For a total the two agree
+       (a magnitude above 1 is m < |L2|), but for an annular the magnitude at
+       which the discs nest, (L1 - L2)/(L1 + L2), moves with the observer's
+       zeta: measured along the annular limits of the catalogue, the two
+       instants are up to 1.3 s apart, and within 1.5 m of the limit of
+       2028-01-26 at 71.53 W the whole annular phase falls before greatest
+       eclipse. There C2 and C3 are both on one side of MAX, because that is
+       where they are; searched from the maximum, the phase is not found. */
+    const tIn = argmin(fOf('inn'), bestIn.t);
+    // Every sign change on the grid, with the anchor's cell split in two, and
+    // the direction of each crossing read off the ends of its bracket rather
+    // than by stepping past the root, which fails for a phase shorter than
+    // the step.
+    const roots = (key, tA) => {
+      const f = fOf(key), fA = f(tA), r = [];
+      const cut = (t0, f0, t1, f1) => {
+        if ((f0 < 0) !== (f1 < 0)) r.push({ t: bisect(f, t0, t1), enters: f1 < 0 });
+      };
+      for (let i = 0; i < n; i++) {
+        const p = gs[i], q = gs[i + 1];
+        if (p.t < tA && tA < q.t) { cut(p.t, p[key], tA, fA); cut(tA, fA, q.t, q[key]); }
+        else cut(p.t, p[key], q.t, q[key]);
+      }
       return r;
     };
     // Contacts are named by which way the curve crosses zero, never by the
@@ -202,10 +246,10 @@ const Bess = (() => {
     // window; when only one is, a LAST contact gets stamped as a first one and
     // every consumer that scans forward from C1 then finds an empty interval
     // and concludes there is no eclipse here.
-    const name = (key, cIn, cOut) => {
-      const f = fOf(key), rr = roots(key), eps = 1e-6;
-      const before = rr.filter(r => r <= tMax && f(r + eps) < 0);
-      const after = rr.filter(r => r >= tMax && f(r + eps) > 0);
+    const name = (key, tA, cIn, cOut) => {
+      const rr = roots(key, tA);
+      const before = rr.filter(r => r.enters && r.t <= tA).map(r => r.t);
+      const after = rr.filter(r => !r.enters && r.t >= tA).map(r => r.t);
       if (before.length) out[cIn] = stamp(Math.max(...before));
       if (after.length) out[cOut] = stamp(Math.min(...after));
     };
@@ -221,8 +265,8 @@ const Bess = (() => {
       central: gm.L2 < 0 ? 'total' : 'annular',
       MAX: stamp(tMax), duration_s: 0
     };
-    name('out', 'C1', 'C4');
-    name('inn', 'C2', 'C3');
+    name('out', tMax, 'C1', 'C4');
+    name('inn', tIn, 'C2', 'C3');
     if (out.C2 && out.C3) out.duration_s = (out.C3.t - out.C2.t) * 3600;
 
     // The shadow geometry does not care whether the Sun is up, and a user

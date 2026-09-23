@@ -914,6 +914,157 @@ const SUITE = ['2026-08-12', '2027-08-02', '2043-04-09', '2039-12-15', '2026-02-
   }
 }
 
+// ---------------------------------------------------------------------------
+// 19. Phases shorter than the step local() samples at.
+//
+//     local() evaluates the shadow every 7.2 s and used to find a contact only
+//     where two samples fell either side of it. A phase shorter than that could
+//     begin and end between two samples and leave no trace: within some 400 m
+//     of the limits of 2026-08-12 the panel read PARTIAL at 100 % with a
+//     magnitude above 1, 17 of 215 central-line samples of the hybrid
+//     2049-11-25 had no central phase, and a site 20 cm inside the penumbra,
+//     eclipsed for 2.9 s, was told it saw no eclipse at all. Every block below
+//     fails with the grid-only search put back: each anchor's cell left
+//     unsplit in `roots`, and the null test made on the grid's best sample
+//     again instead of at the refined maximum.
+// ---------------------------------------------------------------------------
+{
+  // (a) Against an independent solver, not a port: Skyfield 1.55 with DE440s,
+  //     topocentric apparent Sun and Moon, contacts where their separation
+  //     equals the sum or the difference of the apparent radii, with this
+  //     catalogue's conventions -- Sun 695 700 km, k 0.272488 outside and
+  //     0.272281 inside, no refraction, and Skyfield's delta T, which is the
+  //     catalogue's own (69.099 s and 71.42 s). Durations to 0.01 s. The port
+  //     comes out 0.035 s and 0.007 s from the two sites first reported and
+  //     0.07 s from the worst of these eight, the one nearest a limit, where a
+  //     metre moves the duration by a fifth of a second; 0.1 s is set from that.
+  for (const [id, la, lo, kind, want] of [
+    ['2026-08-12', 40.598, -3.9038, 'total', 2.75], ['2026-08-12', 40.599, -3.9038, 'total', 4.74],
+    ['2026-08-12', 40.600, -3.9038, 'total', 6.12], ['2026-08-12', 40.601, -3.9038, 'total', 7.24],
+    ['2049-11-25', 4.6963, 72.6663, 'total', 6.77], ['2049-11-25', 5.3898, 71.3019, 'total', 4.12],
+    ['2049-11-25', -0.8099, 121.8683, 'total', 6.08], ['2049-11-25', 0.9947, 127.2441, 'annular', 3.01]]) {
+    const r = Bess.local(of(id).elements, la, lo, 0);
+    ok(r && r.C2 && r.C3 && r.central === kind, `${id} at ${la} ${lo}: ${kind}, with C2 and C3`);
+    close(r ? r.duration_s : 0, want, 0.1, `${id} at ${la} ${lo}: duration against the independent solver`);
+  }
+
+  // (b) From three kilometres inside a limit to the limit itself, in 50 m
+  //     steps along the normal to the drawn edge: the duration has to fall at
+  //     every step and reach the edge with no PARTIAL before it. The vertex
+  //     is the one nearest the sites above; it sits 0.2 m inside the edge the
+  //     contact function defines, so the duration on it is 0.18 s, under the
+  //     bar section 5 sets for a point on the edge. An annular limit is not
+  //     walked: at 50 m inside one the phase already lasts ten seconds, and
+  //     the grid never missed it there.
+  {
+    const el = of('2026-08-12').elements;
+    let v = null;
+    for (const arr of Bess.limits(el, 'l2').edges) arr.forEach((p, i) => {
+      if (!p || !arr[i - 1] || !arr[i + 1]) return;
+      const d = km(p, [40.599, -3.9038]);
+      if (!v || d < v.d) v = { d, p, a: arr[i - 1], b: arr[i + 1] };
+    });
+    ok(v.d < 5, `a vertex of the 2026 limit near 40.599 N 3.9038 W: ${v.d.toFixed(1)} km`);
+    let inward = Math.atan2((v.b[1] - v.a[1]) * Math.cos(v.p[0] * D2R), v.b[0] - v.a[0]) + Math.PI / 2;
+    if (!(Bess.local(el, ...move(v.p, 3, inward), 0).duration_s > 0)) inward -= Math.PI;
+    const walk = [];
+    for (let m = 3000; m >= 0; m -= 50) {
+      const r = Bess.local(el, ...move(v.p, m / 1000, inward), 0);
+      walk.push([m, r ? r.duration_s : 0]);
+    }
+    const gaps = walk.filter(([m, d]) => m > 0 && !(d > 0)).map(([m]) => m);
+    const rises = walk.filter(([, d], k) => k && !(d < walk[k - 1][1])).map(([m]) => m);
+    ok(walk[0][1] > 15, `3 km inside the 2026 limit: ${walk[0][1].toFixed(2)} s of totality`);
+    ok(gaps.length === 0, `PARTIAL inside the 2026 limit at ${gaps.join(', ')} m from the edge`);
+    ok(rises.length === 0, `the duration does not fall towards the edge at ${rises.join(', ')} m`);
+    ok(walk[walk.length - 1][1] < 1.0, `on the 2026 limit itself: ${walk[walk.length - 1][1].toFixed(3)} s`);
+  }
+
+  // (c) Every tenth central-line sample of the three hybrids, Sun up. On the
+  //     line the axis passes over the site, m reaches zero, and a central
+  //     phase exists however short it is; along a hybrid's track it runs
+  //     down to nothing at each end of the total stretch, which is where the
+  //     grid lost it.
+  for (const id of ['2031-11-14', '2049-11-25', '2050-05-20']) {
+    const el = of(id).elements, line = Bess.centralLine(el).filter(Boolean);
+    let n = 0, none = 0, where = null;
+    for (let i = 0; i < line.length; i += 10) {
+      const r = Bess.local(el, line[i][0], line[i][1], 0);
+      if (!r || !(r.MAX.alt > 0)) continue;
+      n++;
+      if (!(r.duration_s > 0 && r.C2 && r.C3)) { none++; where = where || line[i]; }
+    }
+    ok(n > 100, `${id}: only ${n} central-line samples with the Sun up`);
+    ok(none === 0, `${id}: ${none} of ${n} central-line samples with no central phase` +
+       (where ? `, e.g. ${where[0].toFixed(4)} ${where[1].toFixed(4)}` : ''));
+  }
+
+  // (d) Right at an edge, where the phase lasts milliseconds. Each edge is
+  //     found here from the contact function itself -- its least value over
+  //     the eclipse, bisected along a meridian -- and each probe inside it is
+  //     held to a dense scan of that function, 0.1 ms a step, bisected: slow,
+  //     and blind to how local() searches. Three edges: the penumbra's, where
+  //     a site used to be told there was no eclipse; the umbra's, down to a
+  //     1.2 ms phase, shorter than the 3.6 ms step the old code took past a
+  //     root to tell which way it crossed; and an antumbra's, where the phase
+  //     does not contain greatest eclipse at all. There the magnitude that
+  //     makes the discs nest moves with the observer's zeta, the least of
+  //     m - |L2| falls 1.3 s from the greatest magnitude, and every probe
+  //     under 1.5 m inside has its whole annular phase before or after it:
+  //     searched from greatest eclipse, it is not there.
+  const fOf = (el, o, key) => t => {
+    const g = Bess.geom(el, o, t);
+    return key === 'out' ? g.m - g.L1 : g.m - Math.abs(g.L2);
+  };
+  const least = (el, la, lo, key) => {
+    const f = fOf(el, Bess.observer(el, la, lo, 0), key), h = 10 / 3600;
+    let bt = 0, bv = Infinity;
+    for (let t = -4; t <= 4; t += h) { const x = f(t); if (x < bv) { bv = x; bt = t; } }
+    let a = bt - h, b = bt + h;
+    for (let i = 0; i < 100; i++) {
+      const m1 = a + (b - a) * 0.382, m2 = a + (b - a) * 0.618;
+      if (f(m1) < f(m2)) b = m2; else a = m1;
+    }
+    return { t: (a + b) / 2, v: f((a + b) / 2) };
+  };
+  const scan = (el, la, lo, key, tc) => {
+    const f = fOf(el, Bess.observer(el, la, lo, 0), key), h = 1e-4 / 3600, r = {};
+    let t0 = tc - 5 / 3600, f0 = f(t0);
+    for (let k = 1; k <= 100000; k++) {
+      const t1 = tc - 5 / 3600 + k * h, f1 = f(t1);
+      if ((f0 < 0) !== (f1 < 0)) {
+        let a = t0, b = t1;
+        for (let i = 0; i < 60; i++) { const c = (a + b) / 2; if ((f(c) < 0) === (f0 < 0)) a = c; else b = c; }
+        r[f1 < 0 ? 'enter' : 'leave'] = (a + b) / 2;
+      }
+      t0 = t1; f0 = f1;
+    }
+    return r;
+  };
+  let excluded = 0;
+  for (const [id, cone, lo, key, inLa, outLa, depths] of [
+    ['2027-08-02', 'penumbra', 32.8, 'out', -12, -15, [1e-5, 1e-3, 0.1, 1]],
+    ['2026-08-12', 'umbra', -3.9038, 'inn', 40.65, 40.55, [1e-5, 1e-3, 0.1, 1]],
+    ['2028-01-26', 'antumbra', -71.5278, 'inn', -2.9, -2.5, [1e-3, 0.1, 1]]]) {
+    const el = of(id).elements, [cIn, cOut] = key === 'out' ? ['C1', 'C4'] : ['C2', 'C3'];
+    let a = inLa, b = outLa;
+    for (let i = 0; i < 60; i++) { const c = (a + b) / 2; if (least(el, c, lo, key).v < 0) a = c; else b = c; }
+    for (const d of depths) {
+      const la = (a + b) / 2 + Math.sign(inLa - outLa) * d / 111195;
+      const ref = scan(el, la, lo, key, least(el, la, lo, key).t);
+      const r = Bess.local(el, la, lo, 0), what = `${id} ${d} m inside the ${cone}`;
+      if (!ok(ref.enter !== undefined && ref.leave !== undefined, `${what}: the dense scan finds the phase`)) continue;
+      if (!ok(r && r[cIn] && r[cOut], `${what}: ${(ref.leave - ref.enter) * 3600} s and local() gives ` +
+              (r ? `${cIn} ${!!r[cIn]}, ${cOut} ${!!r[cOut]}` : 'null'))) continue;
+      close(r[cIn].t * 3600, ref.enter * 3600, 1e-4, `${what}: ${cIn} (s)`);
+      close(r[cOut].t * 3600, ref.leave * 3600, 1e-4, `${what}: ${cOut} (s)`);
+      if (key === 'inn' && (r.MAX.t < ref.enter || r.MAX.t > ref.leave)) excluded++;
+    }
+  }
+  // Without these the antumbral probes stop testing the anchor at all.
+  ok(excluded >= 2, `${excluded} probes with greatest eclipse outside the annular phase`);
+}
+
 console.log(fails ? `${fails} FAILURES`
                   : 'besselian.js OK — agrees with eclipsecat.py, DE440s and NASA');
 process.exit(fails ? 1 : 0);
