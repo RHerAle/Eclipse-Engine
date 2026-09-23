@@ -14,3 +14,4 @@ jobs:
           node tests/besselian.test.js
           node tests/radiometry.test.js
           node tests/stabilise.test.js
+          node tests/terrain.test.js
