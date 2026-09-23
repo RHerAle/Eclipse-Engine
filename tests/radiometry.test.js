@@ -292,6 +292,36 @@ for (const i of [300, 600]) {
      `fila ${i} (obsc ${rows[i][col('obsc_geometric')].toFixed(2)}): 450 nm ${t450.toFixed(4)} vs 700 nm ${t700.toFixed(4)}`);
 }
 
+// The Sun is up or down by the same rule as Bess.local, the centre above the
+// geodetic horizon with no refraction. On the refracted altitude it stayed up
+// half a degree longer, and at Rome on 2026-08-12, where the eclipse is still
+// deepening at sunset, the panel's largest visible obscuration came out at
+// 74.69 % beside a headline of 64.9 % for the same point. (Mutation: the
+// test back on the refracted altitude; both checks fail.)
+{
+  const rome = Radio.run(CAT('2026-08-12'), 41.9028, 12.4964, 0, ATM);
+  const vis = Bess.local(CAT('2026-08-12'), 41.9028, 12.4964, 0).visible_obscuration;
+  const upBelow = rome.series.filter(s => !s.below && s.alt <= 0).length;
+  ok(upBelow === 0, `Rome 2026-08-12: ${upBelow} instants counted as up with the Sun's centre below the horizon`);
+  const top = Math.max(...rome.series.filter(s => !s.below).map(s => s.obsc_area));
+  ok(top <= vis + 0.005, `Rome 2026-08-12: largest obscuration with the Sun up ${(100 * top).toFixed(2)} % against ${(100 * vis).toFixed(2)} % from Bess.local`);
+}
+
+// A refused request is not a table. load() kept whatever parsed, an error
+// page included, and every later run read it. (Mutation: the old load that
+// never looks at the status; the second check fails.)
+(async () => {
+  const saved = global.fetch;
+  Radio.setTables(null);
+  global.fetch = async () => ({ ok: false, status: 503, json: async () => ({ error: 'unavailable' }) });
+  let threw = false;
+  try { await Radio.load('x'); } catch (e) { threw = true; }
+  ok(threw, 'load() refuses a failed request');
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => T });
+  ok((await Radio.load('x')) === T, 'and asks again, keeping the tables once they arrive');
+  global.fetch = saved;
+  Radio.setTables(T);
 console.log(fails ? `${fails} FAILURES`
                   : 'radiometry.js OK — reproduces the manuscript spectral chain');
 process.exit(fails ? 1 : 0);
+})();

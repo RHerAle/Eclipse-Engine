@@ -17,9 +17,15 @@ const Radio = (() => {
   const D2R = Math.PI / 180;
   let T = null;                                  // the tables, loaded once
 
-  const load = async (url = 'data/spectral.json') =>
-    (T = T || await (await fetch(url)).json());
-  const setTables = t => (T = t);                // for the node test
+  // Kept only once it arrived: an error page that happens to parse, or a
+  // refused request, is not a table, and keeping it would break the panel for
+  // the rest of the visit. setTables hands over tables fetched elsewhere, by
+  // a page with its own time limit on the request, or by the node tests.
+  const load = async (url = 'data/spectral.json') => T || (T = await fetch(url).then(r => {
+    if (!r.ok) throw new Error('spectral tables: ' + r.status);
+    return r.json();
+  }));
+  const setTables = t => (T = t);
 
   // --- atmosphere ---------------------------------------------------------
 
@@ -180,8 +186,14 @@ const Radio = (() => {
       const t = ta + (tb - ta) * i / nsteps;
       const g = Bess.geom(B, o, t);
       const aa = Bess.altaz(o, g);
+      // Up or down by the same rule as Bess.local: the Sun's centre above the
+      // geodetic horizon, with no refraction. Deciding it on the refracted
+      // altitude kept the Sun up to half a degree longer, so near sunset the
+      // panel's largest visible obscuration was not the one the page's
+      // headline gave for the same point: 74.69 % against 64.9 % at Rome on
+      // 2026-08-12. Refraction still enters the air mass below.
+      if (aa.alt <= 0) { series.push({ t, alt: aa.alt, below: true }); continue; }
       const altR = refract(aa.alt, atm.p_surface_Pa, atm.T_air_C);
-      if (altR <= 0) { series.push({ t, alt: aa.alt, below: true }); continue; }
       const am = airmass(90 - altR);
 
       // Angular radii at the observer, recovered from the elements. The Moon's
