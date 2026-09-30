@@ -11,7 +11,9 @@
  *
  * Each check was run against the defect it exists for: a failed tile resolved
  * to null again (check 1 fails), the cache left holding the failure (check 2),
- * the tile timer and the Overpass timer removed (checks 3 and 4).
+ * the tile timer and the Overpass timer removed (checks 3 and 4), the
+ * query's referrer policy removed (check 5), and the remark ignored (check
+ * 6) or every answer taken as an error (check 5).
  */
 'use strict';
 let fails = 0;
@@ -88,6 +90,22 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok(w4.length === 1 && w4[0].ms <= 30000, `the Overpass query is on a clock of 30 s or less (${w4.map(w => w.ms)})`);
   w4.forEach(w => w.f());
   ok((await settled(q4)).startsWith('rejected'), 'an Overpass query that never answers fails when its time is up');
+
+  // 5. The query goes out with the site's address as its Referer: without
+  //    one the server answers 406, which a browser sees as no answer at all.
+  //    An answer with nothing wrong in it is still an answer.
+  let sent;
+  global.fetch = (url, o) => { sent = o; return Promise.resolve({ ok: true, json: async () => ({ elements: [] }) }); };
+  const q5 = Terrain.buildings(...BULNES, 400);
+  ok(sent && sent.referrerPolicy === 'origin', `the Overpass query sends the site's address as its Referer (${sent && sent.referrerPolicy})`);
+  ok((await settled(q5)) === 'resolved', 'an Overpass answer with no error in it is taken');
+
+  // 6. A query that ran out of time comes back 200 with no buildings and a
+  //    remark saying so, and that is a failure, not "none mapped here".
+  global.fetch = () => Promise.resolve({ ok: true, json: async () => ({ elements: [],
+    remark: 'runtime error: Query timed out in "query" at line 1 after 26 seconds.' }) });
+  ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
+     'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
