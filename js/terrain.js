@@ -284,17 +284,32 @@ const Terrain = (() => {
    */
   async function buildings(lat, lon, radiusM) {
     radiusM = radiusM || 400;
-    const q = `[out:json][timeout:25];way["building"](around:${radiusM},${lat},${lon});out geom;`;
+    // `maxsize` is the memory the query declares, and the server admits a
+    // query only while it fits in half of what is free: the default, 512 MiB,
+    // waits for a whole GiB. The densest places measured in September 2026,
+    // Amsterdam (1415 buildings within 400 m), Tokyo and Manhattan, each ran
+    // in 4 MiB.
+    const q = `[out:json][timeout:25][maxsize:33554432];way["building"](around:${radiusM},${lat},${lon});out geom;`;
     // The server's own limit is the 25 s in the query; this one covers a
     // server that never gets to apply it.
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), WAIT_MS);
     let d;
     try {
+      // overpass-api.de answers 406 to a query that comes with no Referer,
+      // and a page under `Referrer-Policy: no-referrer`, as eclipseradar.com
+      // is, sends none. The 406 carries no CORS header, so the browser
+      // reports it as a network failure. Measured on 30 September 2026: 406
+      // without, 200 with. 'origin' sends the site's address and nothing
+      // else, which the Origin header of this same request already carries.
       const r = await fetch('https://overpass-api.de/api/interpreter',
-                            { method: 'POST', body: q, signal: ac.signal });
+                            { method: 'POST', body: q, signal: ac.signal, referrerPolicy: 'origin' });
       if (!r.ok) throw new Error('overpass ' + r.status);
       d = await r.json();
     } finally { clearTimeout(timer); }
+    // A query that runs out of time or memory is still answered 200, with
+    // what it had found by then, often nothing, and a remark saying why.
+    // Read as an answer, that told the visitor no building was mapped there.
+    if (/runtime error/.test(d.remark || '')) throw new Error('overpass ' + d.remark);
     const out = [];
     let total = 0, guessed = 0;
     let withHeight = 0;
