@@ -314,8 +314,9 @@ function sun(im, cx, cy, r, peak, u) {
 //     the Sun closing in on a blurred crescent. Once the crescent is a few
 //     pixels wide the lunar limb lies inside the annulus, and without the
 //     polarity test the fit settled between the two limbs, 9 px off here and
-//     24 px a pixel or two later. tools/stab_solar.py has no polarity test.
-//     Mutation: keeping edge points of either polarity.
+//     24 px a pixel or two later. tools/stab_solar.py's self-test tracks the
+//     same crescent as far as 9 px, where its fixed threshold leaves too few
+//     lit pixels. Mutation: keeping edge points of either polarity.
 // ---------------------------------------------------------------------------
 {
   const R = 105, TX = 200.3, TY = 190.6, trk = Stab.tracker();
