@@ -30,10 +30,6 @@
  * are that camera's and are measured here too: the limb threshold, because a
  * Sun filmed through a filter is well exposed and never clips, and the
  * distance at which a fit counts as an outlier, which is a solar radius.
- *
- * And one decision changed: the limb fit also checks which way each edge
- * point steps, lit to dark or dark to lit, which the Python version does not.
- * Without it a thin crescent locked onto the Moon's limb (see fitLimb).
  */
 const Stab = (() => {
   'use strict';
