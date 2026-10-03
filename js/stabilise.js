@@ -30,6 +30,10 @@
  * are that camera's and are measured here too: the limb threshold, because a
  * Sun filmed through a filter is well exposed and never clips, and the
  * distance at which a fit counts as an outlier, which is a solar radius.
+ *
+ * And one decision changed: the limb fit also checks which way each edge
+ * point steps, lit to dark or dark to lit, which the Python version does not.
+ * Without it a thin crescent locked onto the Moon's limb (see fitLimb).
  */
 const Stab = (() => {
   'use strict';
@@ -284,6 +288,14 @@ const Stab = (() => {
   // admits the stretch of lunar limb that happens to pass at roughly the solar
   // radius, and a tenth of the points on the wrong circle drags the centre by
   // pixels.
+  //
+  // Polarity as well, for the same reason as in darkDisk. Near second contact
+  // the crescent is a few pixels wide and the lunar limb runs inside the
+  // annulus along its whole length; on a blurred synthetic crescent the fit
+  // settled between the two circles, 31 px from the centre. Going outward the
+  // solar limb steps from lit to dark and the lunar limb from dark to lit, so
+  // an edge point counts only if it is lit with a dark pixel outside it, or
+  // dark with a lit pixel inside it.
   function fitLimb(g, w, h, thr, r, centre, band) {
     const mask = new Uint8Array(w * h);
     let lit = 0;
@@ -307,12 +319,21 @@ const Stab = (() => {
         }
       }
     if (xs.length < MIN_EDGE) return null;
+    const on = (x, y) => {
+      x = Math.round(x); y = Math.round(y);
+      return x >= 0 && x < w && y >= 0 && y < h && mask[y * w + x] === 1;
+    };
     let keep = null, fit = { cx, cy, r };
     for (const tol of TOL_SCHEDULE) {
       keep = new Uint8Array(xs.length);
       let n = 0;
-      for (let i = 0; i < xs.length; i++)
-        if (Math.abs(Math.hypot(xs[i] - fit.cx, ys[i] - fit.cy) - fit.r) < tol) { keep[i] = 1; n++; }
+      for (let i = 0; i < xs.length; i++) {
+        const x = xs[i], y = ys[i], dx = x - fit.cx, dy = y - fit.cy, d = Math.hypot(dx, dy);
+        if (!(Math.abs(d - fit.r) < tol)) continue;
+        const ux = dx / d, uy = dy / d;
+        if (mask[y * w + x] ? on(x + ux, y + uy) : !on(x - ux, y - uy)) continue;
+        keep[i] = 1; n++;
+      }
       if (n < MIN_EDGE) return null;
       const f = kasa(xs, ys, keep);
       if (!f || !(f.r > band[0] && f.r < band[1])) return null;

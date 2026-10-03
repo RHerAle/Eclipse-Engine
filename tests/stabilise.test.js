@@ -309,5 +309,28 @@ function sun(im, cx, cy, r, peak, u) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 12. The last frames before second contact, tracked: a Moon 3 % larger than
+//     the Sun closing in on a blurred crescent. Once the crescent is a few
+//     pixels wide the lunar limb lies inside the annulus, and without the
+//     polarity test the fit settled between the two limbs, 9 px off here and
+//     24 px a pixel or two later. tools/stab_solar.py has no polarity test.
+//     Mutation: keeping edge points of either polarity.
+// ---------------------------------------------------------------------------
+{
+  const R = 105, TX = 200.3, TY = 190.6, trk = Stab.tracker();
+  let worst = 0, lost = 0;
+  [250, 40, 20, 13, 9, 7, 6].forEach((d, i) => {
+    const im = img(400, 400);
+    disc(im, TX, TY, R, 255);
+    disc(im, TX + d * Math.cos(0.3), TY + d * Math.sin(0.3), 1.03 * R, 0);
+    gauss(im, 1.5);
+    const res = trk(im.d, im.w, im.h, i / 25);
+    if (!res) lost++;
+    else worst = Math.max(worst, Math.hypot(res.cx - TX, res.cy - TY));
+  });
+  ok(lost === 0 && worst < 3, `a thin crescent: ${lost} frames lost, worst ${worst.toFixed(1)} px`);
+}
+
 console.log(fails ? `${fails} FAILURES` : 'stabilise.js OK — matches tools/stab_solar.py');
 process.exit(fails ? 1 : 0);
