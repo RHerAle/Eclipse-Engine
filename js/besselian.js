@@ -16,6 +16,9 @@ const Bess = (() => {
   const F = 1 / 298.257223563, E2 = 2 * F - F * F, SQ = Math.sqrt(1 - E2);
   const D2R = Math.PI / 180, R2D = 180 / Math.PI;
 
+  // Faster replacement for Math.hypot in V8
+  const hypot = (x, y) => Math.sqrt(x * x + y * y);
+
   const poly = (c, t) => { let v = 0; for (let i = c.length - 1; i >= 0; i--) v = v * t + c[i]; return v; };
   const dpoly = (c, t) => { let v = 0; for (let i = c.length - 1; i >= 1; i--) v = v * t + i * c[i]; return v; };
 
@@ -143,7 +146,7 @@ const Bess = (() => {
     const xi = o.rc * Math.sin(H);
     const eta = o.rs * cd - o.rc * cH * sd;
     const zeta = o.rs * sd + o.rc * cH * cd;
-    const m = Math.hypot(e.x - xi, e.y - eta);
+    const m = hypot(e.x - xi, e.y - eta);
     return { m, zeta, L1: e.l1 - zeta * B.tan_f1, L2: e.l2 - zeta * B.tan_f2, d: e.d, H,
              e, xi, eta };
   }
@@ -457,7 +460,7 @@ const Bess = (() => {
     let zeta = 0, xiD = 0, etaD = 0, p = null;
     for (let k = 0; k < 5; k++) {
       const L = Math.abs((which === 'l2' ? e.l2 : e.l1) - zeta * tanf);
-      const vx = e.xd - xiD, vy = e.yd - etaD, nrm = Math.hypot(vx, vy);
+      const vx = e.xd - xiD, vy = e.yd - etaD, nrm = hypot(vx, vy);
       p = projectAt(r1, sd1, cd1, sd, cd, dmu, e.mu,
                     e.x - s * L * vy / nrm, e.y + s * L * vx / nrm);
       if (!p) return null;
@@ -484,7 +487,7 @@ const Bess = (() => {
      the region came out spanning 874 degrees. Both criteria, always. */
   const MAX_KM = 250, MAX_DLON = 60;
   const dlonOf = (a, b) => (((b[1] - a[1]) + 540) % 360) - 180;
-  const gapKm = (a, b) => Math.hypot((b[0] - a[0]) * 111.19,
+  const gapKm = (a, b) => hypot((b[0] - a[0]) * 111.19,
     dlonOf(a, b) * 111.19 * Math.cos((a[0] + b[0]) / 2 * D2R));
   const tooFar = (a, b) => gapKm(a, b) > MAX_KM || Math.abs(dlonOf(a, b)) > MAX_DLON;
 
@@ -606,7 +609,7 @@ const Bess = (() => {
     };
     const under = psi => {
       const q = rimAt(psi);
-      return !!q && Math.hypot(e.x - q.px, e.y - q.py) < Math.abs(base - q.p.zeta * tanf);
+      return !!q && hypot(e.x - q.px, e.y - q.py) < Math.abs(base - q.p.zeta * tanf);
     };
     /* Walk the rim from where the cone left the planet to where it comes back,
        the way round that stays under the cone, and hand back the points. */
@@ -678,7 +681,7 @@ const Bess = (() => {
     // wrong.
     const pole = (sign) => {
       const eta = sign * SQ * Math.cos(e.d), zeta = sign * SQ * Math.sin(e.d);
-      return Math.hypot(e.x, e.y - eta) < Math.abs(base - zeta * tanf);
+      return hypot(e.x, e.y - eta) < Math.abs(base - zeta * tanf);
     };
     // One segment is NOT the same as a closed ring, and treating it as one is
     // what put the instantaneous shadow outside the visibility limit it can
@@ -757,7 +760,7 @@ const Bess = (() => {
     if (Math.sin(o.p) * sd + Math.cos(o.p) * cd * cH <= 0) return 0;
     const zeta = o.rs * sd + o.rc * cH * cd;
     const L1 = poly(B.l1, t) - zeta * B.tan_f1;
-    const m = Math.hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
+    const m = hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
     if (m >= L1) return 0;
     const L2 = poly(B.l2, t) - zeta * B.tan_f2;
     return obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
@@ -784,7 +787,7 @@ const Bess = (() => {
     if (Math.sin(o.p) * sd + Math.cos(o.p) * cd * cH <= 0) return -1;
     const zeta = o.rs * sd + o.rc * cH * cd;
     const L1 = poly(B.l1, t) - zeta * B.tan_f1;
-    const m = Math.hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
+    const m = hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
     const v = L1 - m;
     return v < -1 ? -1 : v;
   }
@@ -863,7 +866,7 @@ const Bess = (() => {
             // Geodetic horizon, the same one obsAt and local() use.
             if (r.sp * sd + r.cp * cd * cH <= 0) continue;
             const zeta = r.rs * sd + r.rc * cH * cd;
-            const m = Math.hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
+            const m = hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
             const L1 = e.l1 - zeta * B.tan_f1;
             const idx = j * nlon + i;
             const vm = L1 - m;
@@ -1123,7 +1126,7 @@ const Bess = (() => {
       if (Math.abs(la) > 90 || Math.abs(lo) > 180) return null;
       const cs = Math.max(1e-6, Math.cos(la * D2R));
       const dx = (b[1] - a[1]) * cs, dy = b[0] - a[0];
-      const L = Math.hypot(dx, dy);
+      const L = hypot(dx, dy);
       if (!(L > 0)) return null;
       const nx = -dy / L, ny = dx / L, kh = kNear(la, lo);
       // The normal is traced in arc distance and converted back to longitude
@@ -1183,7 +1186,7 @@ const Bess = (() => {
     // neighbours is four times the sagitta of one segment, so h/4 estimates
     // the error without evaluating anything. Segments over tolerance get a
     // new point, and that one is computed against the real function.
-    const segKm = (a, b) => Math.hypot((b[1] - a[1]) * Math.cos((a[0] + b[0]) / 2 * D2R),
+    const segKm = (a, b) => hypot((b[1] - a[1]) * Math.cos((a[0] + b[0]) / 2 * D2R),
                                        b[0] - a[0]) * KM_PER_DEG;
     function refineRing(ring, level) {
       for (let pass = 0; pass < maxDepth; pass++) {
@@ -1194,7 +1197,7 @@ const Bess = (() => {
           const cs = Math.cos(b[0] * D2R);
           const ax = (a[1] - b[1]) * cs, ay = a[0] - b[0];
           const cx = (c[1] - b[1]) * cs, cy = c[0] - b[0];
-          const L = Math.hypot(cx - ax, cy - ay);
+          const L = hypot(cx - ax, cy - ay);
           h[i] = L > 0 ? Math.abs(ax * (cy - ay) - ay * (cx - ax)) / L * KM_PER_DEG : 0;
         }
         const out = [];
@@ -1276,7 +1279,7 @@ const Bess = (() => {
           const cs = Math.cos(b[0] * D2R);
           const ax = (a[1] - b[1]) * cs, ay = a[0] - b[0];
           const cx = (c[1] - b[1]) * cs, cy = c[0] - b[0];
-          const L = Math.hypot(cx - ax, cy - ay);
+          const L = hypot(cx - ax, cy - ay);
           if (L > 0 && Math.abs(a[1] - b[1]) < 5 && Math.abs(c[1] - b[1]) < 5 &&
               Math.abs(ax * (cy - ay) - ay * (cx - ax)) / L * KM_PER_DEG > 5) continue;
         }
