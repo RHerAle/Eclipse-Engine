@@ -1065,6 +1065,34 @@ const SUITE = ['2026-08-12', '2027-08-02', '2043-04-09', '2039-12-15', '2026-02-
   ok(excluded >= 2, `${excluded} probes with greatest eclipse outside the annular phase`);
 }
 
+// ---------------------------------------------------------------------------
+// 20. hypot is Math.sqrt(x * x + y * y), not Math.hypot, for speed. The two can
+//     differ in the last bit, so the grid at the size the site draws it and the
+//     contours are held against a fresh copy of the module that uses
+//     Math.hypot. Both eclipses are ones whose results do move, by about 1e-14.
+//     Mutation: rounding hypot to single precision.
+// ---------------------------------------------------------------------------
+{
+  const src = fs.readFileSync(require.resolve('../js/besselian.js'), 'utf8');
+  const def = /const hypot = [^;]*;/g;
+  ok((src.match(def) || []).length === 1, 'besselian.js defines hypot once');
+  const mod = { exports: {} };
+  new Function('module', src.replace(def, 'const hypot = Math.hypot;'))(mod);
+  const pts = c => [...c.rings.flat(), ...c.visible].flatMap(r => [NaN, ...r.flat()]);
+  for (const id of ['2029-12-05', '2038-12-26']) {
+    const Bx = of(id).elements;
+    const G = [Bess, mod.exports].map(M => M.obscurationGrid(Bx, 400, 200, 121));
+    let cell = 0;
+    for (const k of ['grid', 'tmax', 'vis', 'tvis'])
+      G[0][k].forEach((v, i) => { cell = Math.max(cell, Math.abs(v - G[1][k][i])); });
+    ok(cell < 1e-9, `${id}: the grid moves ${cell} against Math.hypot`);
+    const [a, b] = [Bess, mod.exports].map((M, w) => pts(M.contours(Bx, { grid: G[w] })));
+    let far = a.length === b.length ? 0 : Infinity;
+    if (far === 0) a.forEach((v, i) => { if (!Object.is(v, b[i])) far = Math.max(far, Math.abs(v - b[i])); });
+    ok(far < 1e-9, `${id}: a contour vertex moves ${far} deg against Math.hypot`);
+  }
+}
+
 console.log(fails ? `${fails} FAILURES`
                   : 'besselian.js OK — agrees with eclipsecat.py, DE440s and NASA');
 process.exit(fails ? 1 : 0);
