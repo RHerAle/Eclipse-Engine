@@ -123,18 +123,28 @@ const Stab = (() => {
 
   // Scharr, not Sobel: the same 3x3 cost with a much flatter response to edge
   // orientation, which matters when what is being scored is a circle.
+  //
+  // ⚡ Bolt: Removed the 'at' closure and inlined bounds checking,
+  // preventing ~4x overhead from function calls and redundant min/max inside the hot loop.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
-    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
+    for (let y = 0; y < h; y++) {
+      const ym1 = Math.max(0, y - 1) * w;
+      const y0 = y * w;
+      const yp1 = Math.min(h - 1, y + 1) * w;
+
       for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+        const xm1 = Math.max(0, x - 1);
+        const xp1 = Math.min(w - 1, x + 1);
+
+        const tl = src[ym1 + xm1], tm = src[ym1 + x], tr = src[ym1 + xp1];
+        const ml = src[y0 + xm1],  mr = src[y0 + xp1];
+        const bl = src[yp1 + xm1], bm = src[yp1 + x], br = src[yp1 + xp1];
+
+        gx[y0 + x] = 3 * (tr - tl) + 10 * (mr - ml) + 3 * (br - bl);
+        gy[y0 + x] = 3 * (bl - tl) + 10 * (bm - tm) + 3 * (br - tr);
       }
+    }
     return { gx, gy };
   }
 
