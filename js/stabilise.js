@@ -88,13 +88,16 @@ const Stab = (() => {
     const W = Math.floor(w / s), H = Math.floor(h / s);
     const out = new Float32Array(W * H), n = s * s;
     for (let y = 0; y < H; y++) {
+      let r_out = y * W;
+      let r_in_base = y * s * w;
       for (let x = 0; x < W; x++) {
         let acc = 0;
+        let c_in_base = x * s;
         for (let j = 0; j < s; j++) {
-          const row = (y * s + j) * w + x * s;
-          for (let i = 0; i < s; i++) acc += g[row + i];
+          let row = r_in_base + j * w;
+          for (let i = 0; i < s; i++) acc += g[row + c_in_base + i];
         }
-        out[y * W + x] = acc / n;
+        out[r_out + x] = acc / n;
       }
     }
     return { d: out, w: W, h: H };
@@ -106,18 +109,34 @@ const Stab = (() => {
     for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); sum += k[i + r]; }
     for (let i = 0; i < k.length; i++) k[i] /= sum;
     const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
-    for (let y = 0; y < h; y++)
+
+    // Horizontal pass
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + Math.min(w - 1, Math.max(0, x + i))];
-        tmp[y * w + x] = a;
+        if (x >= r && x < w - r) {
+          for (let i = -r; i <= r; i++) a += k[i + r] * src[row + x + i];
+        } else {
+          for (let i = -r; i <= r; i++) a += k[i + r] * src[row + Math.min(w - 1, Math.max(0, x + i))];
+        }
+        tmp[row + x] = a;
       }
-    for (let y = 0; y < h; y++)
+    }
+
+    // Vertical pass
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
-        out[y * w + x] = a;
+        if (y >= r && y < h - r) {
+          for (let i = -r; i <= r; i++) a += k[i + r] * tmp[(y + i) * w + x];
+        } else {
+          for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
+        }
+        out[row + x] = a;
       }
+    }
     return out;
   }
 
@@ -125,16 +144,34 @@ const Stab = (() => {
   // orientation, which matters when what is being scored is a circle.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
-    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+
+    for (let y = 1; y < h - 1; y++) {
+      let r0 = (y - 1) * w;
+      let r1 = y * w;
+      let r2 = (y + 1) * w;
+      for (let x = 1; x < w - 1; x++) {
+        let p00 = src[r0 + x - 1], p01 = src[r0 + x + 1];
+        let p10 = src[r1 + x - 1], p11 = src[r1 + x + 1];
+        let p20 = src[r2 + x - 1], p21 = src[r2 + x + 1];
+
+        gx[r1 + x] = 3 * (p01 - p00) + 10 * (p11 - p10) + 3 * (p21 - p20);
+        gy[r1 + x] = 3 * (p20 - p00) + 10 * (src[r2 + x] - src[r0 + x]) + 3 * (p21 - p01);
       }
+    }
+
+    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+    const edgeCalc = (x, y) => {
+      let idx = y * w + x;
+      gx[idx] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
+                   + 10 * (at(x + 1, y) - at(x - 1, y))
+                    + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+      gy[idx] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
+                   + 10 * (at(x, y + 1) - at(x, y - 1))
+                    + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+    };
+    for (let x = 0; x < w; x++) { edgeCalc(x, 0); edgeCalc(x, h - 1); }
+    for (let y = 1; y < h - 1; y++) { edgeCalc(0, y); edgeCalc(w - 1, y); }
+
     return { gx, gy };
   }
 
