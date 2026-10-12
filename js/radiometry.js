@@ -101,8 +101,26 @@ const Radio = (() => {
     // 2028-01-26.
     if (sep <= rm - rs) return 1;
     const h = (Math.PI / 2) / n;
+
+    // Performance optimization: skip angles where phi = 0 (f = 0)
+    let kStart = 0;
+    if (sep > rm) {
+      const minSin = (sep - rm) / rs;
+      if (minSin > 0 && minSin <= 1) {
+        kStart = Math.max(0, Math.floor(Math.asin(minSin) / h));
+      }
+    }
+
+    let kEnd = n;
+    if (sep + rm < rs) {
+      const maxSin = (sep + rm) / rs;
+      if (maxSin >= 0 && maxSin < 1) {
+        kEnd = Math.min(n, Math.ceil(Math.asin(maxSin) / h));
+      }
+    }
+
     let acc = 0;
-    for (let k = 0; k <= n; k++) {
+    for (let k = kStart; k <= kEnd; k++) {
       const th = k * h, ct = Math.max(0, Math.cos(th)), st = Math.sin(th);
       const rho = rs * st;
       let phi;
