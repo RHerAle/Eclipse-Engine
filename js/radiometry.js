@@ -116,6 +116,37 @@ const Radio = (() => {
     return acc * h / 3 / (2 * Math.PI / (alpha + 2));
   }
 
+
+  // Fraction of the solar flux hidden for MULTIPLE limb darkening coefficients.
+  // The geometric calculation (which computes the obscured area phi) depends only
+  // on the geometry (sep, rs, rm), not on alpha. This batched version avoids
+  // recalculating the same arc-cosine 14 times per time step.
+  function fluxObscurations(sep, rs, rm, alphas, n = 800) {
+    const len = alphas.length;
+    if (sep >= rs + rm) return new Float64Array(len);
+    if (sep <= rm - rs) return new Float64Array(len).fill(1);
+    const h = (Math.PI / 2) / n;
+    const acc = new Float64Array(len);
+    for (let k = 0; k <= n; k++) {
+      const th = k * h, ct = Math.max(0, Math.cos(th)), st = Math.sin(th);
+      const rho = rs * st;
+      let phi;
+      if (rho <= rm - sep) phi = Math.PI;
+      else if (rho >= sep + rm || rho <= sep - rm) phi = 0;
+      else phi = Math.acos(Math.min(1, Math.max(-1,
+        (rho * rho + sep * sep - rm * rm) / (2 * rho * sep))));
+      const base = 2 * phi * st * ct * (k === 0 || k === n ? 1 : (k % 2 ? 4 : 2));
+      for (let i = 0; i < len; i++) {
+        acc[i] += Math.pow(ct, alphas[i]) * base;
+      }
+    }
+    const out = new Float64Array(len);
+    for (let i = 0; i < len; i++) {
+      out[i] = acc[i] * h / 3 / (2 * Math.PI / (alphas[i] + 2));
+    }
+    return out;
+  }
+
   // --- ICNIRP -------------------------------------------------------------
 
   // Angular subtense of the visible photosphere: the mean of its shortest and
@@ -217,7 +248,7 @@ const Radio = (() => {
       const dni0 = spectrl2(90 - altR, am, atm, doy);
       // Flux obscuration is expensive, and alpha(lambda) is smooth, so it is
       // evaluated on 14 alpha nodes and interpolated across the 122 channels.
-      const On = nodes.map(a => fluxObscuration(g.m, (g.L1 + g.L2) / 2, (g.L1 - g.L2) / 2, a));
+      const On = fluxObscurations(g.m, (g.L1 + g.L2) / 2, (g.L1 - g.L2) / 2, nodes);
       const dni = new Float64Array(lam.length);
       const wB = new Float64Array(lam.length), wR = new Float64Array(lam.length);
       const wV = new Float64Array(lam.length), wR0 = new Float64Array(lam.length);
@@ -297,7 +328,7 @@ const Radio = (() => {
   }
 
   return { load, setTables, run, spectrl2, airmass, refract, spencer,
-           alphaHestroffer, fluxObscuration, crescentSubtense, staringTime,
+           alphaHestroffer, fluxObscuration, fluxObscurations, crescentSubtense, staringTime,
            thermalLimitRadiance, trapz, get tables() { return T; } };
 })();
 
