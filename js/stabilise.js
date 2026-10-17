@@ -106,18 +106,52 @@ const Stab = (() => {
     for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); sum += k[i + r]; }
     for (let i = 0; i < k.length; i++) k[i] /= sum;
     const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
-    for (let y = 0; y < h; y++)
+
+    // Horizontal pass with loop splitting to avoid inner bounds checks
+    for (let y = 0; y < h; y++) {
+      let yw = y * w;
+      for (let x = 0; x < Math.min(r, w); x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) a += k[i + r] * src[yw + Math.max(0, Math.min(w - 1, x + i))];
+        tmp[yw + x] = a;
+      }
+      for (let x = Math.min(r, w); x < Math.max(0, w - r); x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) a += k[i + r] * src[yw + x + i];
+        tmp[yw + x] = a;
+      }
+      for (let x = Math.max(Math.min(r, w), Math.max(0, w - r)); x < w; x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) a += k[i + r] * src[yw + Math.max(0, Math.min(w - 1, x + i))];
+        tmp[yw + x] = a;
+      }
+    }
+
+    // Vertical pass with loop splitting
+    for (let y = 0; y < Math.min(r, h); y++) {
+      let yw = y * w;
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + Math.min(w - 1, Math.max(0, x + i))];
-        tmp[y * w + x] = a;
+        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.max(0, Math.min(h - 1, y + i)) * w + x];
+        out[yw + x] = a;
       }
-    for (let y = 0; y < h; y++)
+    }
+    for (let y = Math.min(r, h); y < Math.max(0, h - r); y++) {
+      let yw = y * w;
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
-        out[y * w + x] = a;
+        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[(y + i) * w + x];
+        out[yw + x] = a;
       }
+    }
+    for (let y = Math.max(Math.min(r, h), Math.max(0, h - r)); y < h; y++) {
+      let yw = y * w;
+      for (let x = 0; x < w; x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.max(0, Math.min(h - 1, y + i)) * w + x];
+        out[yw + x] = a;
+      }
+    }
     return out;
   }
 
@@ -227,7 +261,7 @@ const Stab = (() => {
     const pts = [];
     for (let dy = -r - 1; dy <= r + 1; dy++)
       for (let dx = -r - 1; dx <= r + 1; dx++) {
-        const d = Math.hypot(dx, dy);
+        const d = Math.sqrt(dx * dx + dy * dy);
         if (Math.abs(d - r) < 1) pts.push([dx, dy, dx / Math.max(d, 1e-6), dy / Math.max(d, 1e-6)]);
       }
     k = { pts, w: 1 / Math.max(pts.length, 1) };
@@ -324,7 +358,7 @@ const Stab = (() => {
       keep = new Uint8Array(xs.length);
       let n = 0;
       for (let i = 0; i < xs.length; i++) {
-        const x = xs[i], y = ys[i], dx = x - fit.cx, dy = y - fit.cy, d = Math.hypot(dx, dy);
+        const x = xs[i], y = ys[i], dx = x - fit.cx, dy = y - fit.cy, d = Math.sqrt(dx * dx + dy * dy);
         if (!(Math.abs(d - fit.r) < tol)) continue;
         const ux = dx / d, uy = dy / d;
         if (mask[y * w + x] ? on(x + ux, y + uy) : !on(x - ux, y - uy)) continue;
@@ -455,7 +489,7 @@ const Stab = (() => {
       // A centre that moves further than the budget for the elapsed time is
       // lock loss, not motion. The budget scales with the gap, so a fit after
       // a few dropped frames is not rejected merely for having had time to move.
-      if (!res || (prev && Math.hypot(res.cx - prev[0], res.cy - prev[1]) > JUMP_MAX * Math.max(1, gap)))
+      if (!res || (prev && Math.sqrt((res.cx - prev[0]) ** 2 + (res.cy - prev[1]) ** 2) > JUMP_MAX * Math.max(1, gap)))
         return null;
       prev = [res.cx, res.cy]; r = res.r; last = t;
       return res;
