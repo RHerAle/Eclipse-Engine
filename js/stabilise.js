@@ -126,15 +126,33 @@ const Stab = (() => {
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
     const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+
+    // Performance optimization: loop splitting.
+    // Boundary processing (needs clamping).
+    for (let y = 0; y < h; y++) {
+      const yw = y * w;
+      if (y === 0 || y === h - 1) {
+        for (let x = 0; x < w; x++) {
+          gx[yw + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1)) + 10 * (at(x + 1, y) - at(x - 1, y)) + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+          gy[yw + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1)) + 10 * (at(x, y + 1) - at(x, y - 1)) + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+        }
+      } else {
+        let x = 0;
+        gx[yw + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1)) + 10 * (at(x + 1, y) - at(x - 1, y)) + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+        gy[yw + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1)) + 10 * (at(x, y + 1) - at(x, y - 1)) + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+
+        // Inner loops. Avoid Math.min/max for bounds clamping to prevent V8 engine overhead.
+        for (x = 1; x < w - 1; x++) {
+          const i = yw + x;
+          gx[i] = 3 * (src[i - w + 1] - src[i - w - 1]) + 10 * (src[i + 1] - src[i - 1]) + 3 * (src[i + w + 1] - src[i + w - 1]);
+          gy[i] = 3 * (src[i + w - 1] - src[i - w - 1]) + 10 * (src[i + w] - src[i - w]) + 3 * (src[i + w + 1] - src[i - w + 1]);
+        }
+
+        x = w - 1;
+        gx[yw + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1)) + 10 * (at(x + 1, y) - at(x - 1, y)) + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+        gy[yw + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1)) + 10 * (at(x, y + 1) - at(x, y - 1)) + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
       }
+    }
     return { gx, gy };
   }
 
