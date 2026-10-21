@@ -125,16 +125,45 @@ const Stab = (() => {
   // orientation, which matters when what is being scored is a circle.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
-    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+
+    // Fast path: inner loop without bounds checking
+    for (let y = 1; y < h - 1; y++) {
+      const row0 = (y - 1) * w, row1 = y * w, row2 = (y + 1) * w;
+      for (let x = 1; x < w - 1; x++) {
+        const tl = src[row0 + x - 1], tc = src[row0 + x], tr = src[row0 + x + 1];
+        const cl = src[row1 + x - 1], cr = src[row1 + x + 1];
+        const bl = src[row2 + x - 1], bc = src[row2 + x], br = src[row2 + x + 1];
+
+        gx[row1 + x] = 3 * (tr - tl) + 10 * (cr - cl) + 3 * (br - bl);
+        gy[row1 + x] = 3 * (bl - tl) + 10 * (bc - tc) + 3 * (br - tr);
       }
+    }
+
+    // Edges: fallback to bounds checking
+    const at = (x, y) => {
+      let px = x < 0 ? 0 : x >= w ? w - 1 : x;
+      let py = y < 0 ? 0 : y >= h ? h - 1 : y;
+      return src[py * w + px];
+    };
+
+    const processBoundary = (x, y) => {
+      const tl = at(x - 1, y - 1), tc = at(x, y - 1), tr = at(x + 1, y - 1);
+      const cl = at(x - 1, y),     cr = at(x + 1, y);
+      const bl = at(x - 1, y + 1), bc = at(x, y + 1), br = at(x + 1, y + 1);
+      const i = y * w + x;
+      gx[i] = 3 * (tr - tl) + 10 * (cr - cl) + 3 * (br - bl);
+      gy[i] = 3 * (bl - tl) + 10 * (bc - tc) + 3 * (br - tr);
+    };
+
+    for (let x = 0; x < w; x++) {
+      processBoundary(x, 0);
+      if (h > 1) processBoundary(x, h - 1);
+    }
+    for (let y = 1; y < h - 1; y++) {
+      processBoundary(0, y);
+      if (w > 1) processBoundary(w - 1, y);
+    }
+
     return { gx, gy };
   }
 
