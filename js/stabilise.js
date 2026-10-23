@@ -106,18 +106,67 @@ const Stab = (() => {
     for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); sum += k[i + r]; }
     for (let i = 0; i < k.length; i++) k[i] /= sum;
     const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
+
+    const xEnd = Math.max(0, w - r);
+    const startXFast = Math.min(w, r);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < startXFast; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + Math.min(w - 1, Math.max(0, x + i))];
-        tmp[y * w + x] = a;
+        for (let i = -r; i <= r; i++) {
+          let xi = x + i;
+          if (xi < 0) xi = 0; else if (xi >= w) xi = w - 1;
+          a += k[i + r] * src[row + xi];
+        }
+        tmp[row + x] = a;
       }
-    for (let y = 0; y < h; y++)
+      for (let x = startXFast; x < xEnd; x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) a += k[i + r] * src[row + x + i];
+        tmp[row + x] = a;
+      }
+      for (let x = Math.max(startXFast, xEnd); x < w; x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) {
+          let xi = x + i;
+          if (xi < 0) xi = 0; else if (xi >= w) xi = w - 1;
+          a += k[i + r] * src[row + xi];
+        }
+        tmp[row + x] = a;
+      }
+    }
+
+    const yEnd = Math.max(0, h - r);
+    const startYFast = Math.min(h, r);
+    for (let y = 0; y < startYFast; y++) {
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
+        for (let i = -r; i <= r; i++) {
+          let yi = y + i;
+          if (yi < 0) yi = 0; else if (yi >= h) yi = h - 1;
+          a += k[i + r] * tmp[yi * w + x];
+        }
         out[y * w + x] = a;
       }
+    }
+    for (let y = startYFast; y < yEnd; y++) {
+      for (let x = 0; x < w; x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[(y + i) * w + x];
+        out[y * w + x] = a;
+      }
+    }
+    for (let y = Math.max(startYFast, yEnd); y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let a = 0;
+        for (let i = -r; i <= r; i++) {
+          let yi = y + i;
+          if (yi < 0) yi = 0; else if (yi >= h) yi = h - 1;
+          a += k[i + r] * tmp[yi * w + x];
+        }
+        out[y * w + x] = a;
+      }
+    }
     return out;
   }
 
@@ -125,16 +174,54 @@ const Stab = (() => {
   // orientation, which matters when what is being scored is a circle.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
-    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+
+    for (let y = 0; y < h; y++) {
+      const r0 = y * w;
+      if (y > 0 && y < h - 1) {
+        const rm = r0 - w;
+        const rp = r0 + w;
+
+        // x = 0
+        let cm = 0;
+        let cp = Math.min(w - 1, 1);
+        let x = 0;
+        gx[r0 + x] = 3 * (src[rm + cp] - src[rm + cm]) + 10 * (src[r0 + cp] - src[r0 + cm]) + 3 * (src[rp + cp] - src[rp + cm]);
+        gy[r0 + x] = 3 * (src[rp + cm] - src[rm + cm]) + 10 * (src[rp + x] - src[rm + x]) + 3 * (src[rp + cp] - src[rm + cp]);
+
+        for (let x = 1; x < w - 1; x++) {
+          let cm = x - 1;
+          let cp = x + 1;
+          let v_rm_cm = src[rm + cm];
+          let v_rm_x  = src[rm + x];
+          let v_rm_cp = src[rm + cp];
+          let v_r0_cm = src[r0 + cm];
+          let v_r0_cp = src[r0 + cp];
+          let v_rp_cm = src[rp + cm];
+          let v_rp_x  = src[rp + x];
+          let v_rp_cp = src[rp + cp];
+
+          gx[r0 + x] = 3 * (v_rm_cp - v_rm_cm) + 10 * (v_r0_cp - v_r0_cm) + 3 * (v_rp_cp - v_rp_cm);
+          gy[r0 + x] = 3 * (v_rp_cm - v_rm_cm) + 10 * (v_rp_x - v_rm_x) + 3 * (v_rp_cp - v_rm_cp);
+        }
+
+        if (w > 1) {
+          x = w - 1;
+          cm = w - 2;
+          cp = w - 1;
+          gx[r0 + x] = 3 * (src[rm + cp] - src[rm + cm]) + 10 * (src[r0 + cp] - src[r0 + cm]) + 3 * (src[rp + cp] - src[rp + cm]);
+          gy[r0 + x] = 3 * (src[rp + cm] - src[rm + cm]) + 10 * (src[rp + x] - src[rm + x]) + 3 * (src[rp + cp] - src[rm + cp]);
+        }
+      } else {
+        const rm = Math.max(0, y - 1) * w;
+        const rp = Math.min(h - 1, y + 1) * w;
+        for (let x = 0; x < w; x++) {
+          const cm = Math.max(0, x - 1);
+          const cp = Math.min(w - 1, x + 1);
+          gx[r0 + x] = 3 * (src[rm + cp] - src[rm + cm]) + 10 * (src[r0 + cp] - src[r0 + cm]) + 3 * (src[rp + cp] - src[rp + cm]);
+          gy[r0 + x] = 3 * (src[rp + cm] - src[rm + cm]) + 10 * (src[rp + x] - src[rm + x]) + 3 * (src[rp + cp] - src[rm + cp]);
+        }
       }
+    }
     return { gx, gy };
   }
 
