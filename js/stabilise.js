@@ -113,7 +113,7 @@ const Stab = (() => {
 
   // The edge is clamped, and only a pixel within r of it needs the clamp: the
   // rest read their taps directly. Same taps in the same order, so the same
-  // sums to the bit, in 15 to 20 % less time than clamping every tap.
+  // sums to the bit.
   function blur(src, w, h, sigma) {
     const r = Math.max(1, Math.ceil(3 * sigma)), k = new Float32Array(2 * r + 1);
     let sum = 0;
@@ -141,9 +141,8 @@ const Stab = (() => {
   // orientation, which matters when what is being scored is a circle.
   //
   // The neighbouring rows are clamped once a row and the neighbouring columns
-  // once a pixel, and each of the eight neighbours is read once. Clamped per
-  // read through a closure, as it was, the filter took six times as long, a
-  // quarter of a lit-sky frame.
+  // once a pixel, and each of the eight neighbours is read once, rather than
+  // every read going through a closure that clamped both coordinates.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
     for (let y = 0; y < h; y++) {
