@@ -87,14 +87,28 @@ const Stab = (() => {
   function shrink(g, w, h, s) {
     const W = Math.floor(w / s), H = Math.floor(h / s);
     const out = new Float32Array(W * H), n = s * s;
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        let acc = 0;
-        for (let j = 0; j < s; j++) {
-          const row = (y * s + j) * w + x * s;
-          for (let i = 0; i < s; i++) acc += g[row + i];
+
+    if (s === 2) {
+       for (let y = 0; y < H; y++) {
+         const row1 = (y * 2) * w;
+         const row2 = row1 + w;
+         const yW = y * W;
+         for (let x = 0; x < W; x++) {
+            const x2 = x * 2;
+            out[yW + x] = (g[row1 + x2] + g[row1 + x2 + 1] + g[row2 + x2] + g[row2 + x2 + 1]) / 4;
+         }
+       }
+    } else {
+      for (let y = 0; y < H; y++) {
+        const yW = y * W;
+        for (let x = 0; x < W; x++) {
+          let acc = 0;
+          for (let j = 0; j < s; j++) {
+            const row = (y * s + j) * w + x * s;
+            for (let i = 0; i < s; i++) acc += g[row + i];
+          }
+          out[yW + x] = acc / n;
         }
-        out[y * W + x] = acc / n;
       }
     }
     return { d: out, w: W, h: H };
@@ -125,16 +139,58 @@ const Stab = (() => {
   // orientation, which matters when what is being scored is a circle.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
-    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+
+    // Fast path: inner pixels without bounds checking
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = y * w + x;
+        const tl = src[idx - w - 1], tc = src[idx - w], tr = src[idx - w + 1];
+        const ml = src[idx - 1],                   mr = src[idx + 1];
+        const bl = src[idx + w - 1], bc = src[idx + w], br = src[idx + w + 1];
+
+        gx[idx] = 3 * (tr - tl) + 10 * (mr - ml) + 3 * (br - bl);
+        gy[idx] = 3 * (bl - tl) + 10 * (bc - tc) + 3 * (br - tr);
       }
+    }
+
+    // Manual clamping avoids Math.min/Math.max overhead in V8
+    const at = (x, y) => src[(y < 0 ? 0 : y >= h ? h - 1 : y) * w + (x < 0 ? 0 : x >= w ? w - 1 : x)];
+
+    // Edges with manual clamping
+    // Top edge
+    for (let x = 0; x < w; x++) {
+      const idx = x;
+      gx[idx] = 3 * (at(x + 1, -1) - at(x - 1, -1)) + 10 * (at(x + 1, 0) - at(x - 1, 0)) + 3 * (at(x + 1, 1) - at(x - 1, 1));
+      gy[idx] = 3 * (at(x - 1, 1) - at(x - 1, -1)) + 10 * (at(x, 1) - at(x, -1)) + 3 * (at(x + 1, 1) - at(x + 1, -1));
+    }
+
+    // Bottom edge
+    if (h > 1) {
+      for (let x = 0; x < w; x++) {
+        const y = h - 1;
+        const idx = y * w + x;
+        gx[idx] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1)) + 10 * (at(x + 1, y) - at(x - 1, y)) + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+        gy[idx] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1)) + 10 * (at(x, y + 1) - at(x, y - 1)) + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+      }
+    }
+
+    // Left and right edges
+    for (let y = 1; y < h - 1; y++) {
+      // Left edge
+      let x = 0;
+      let idx = y * w;
+      gx[idx] = 3 * (at(1, y - 1) - at(-1, y - 1)) + 10 * (at(1, y) - at(-1, y)) + 3 * (at(1, y + 1) - at(-1, y + 1));
+      gy[idx] = 3 * (at(-1, y + 1) - at(-1, y - 1)) + 10 * (at(0, y + 1) - at(0, y - 1)) + 3 * (at(1, y + 1) - at(1, y - 1));
+
+      // Right edge
+      if (w > 1) {
+        x = w - 1;
+        idx = y * w + x;
+        gx[idx] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1)) + 10 * (at(x + 1, y) - at(x - 1, y)) + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+        gy[idx] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1)) + 10 * (at(x, y + 1) - at(x, y - 1)) + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+      }
+    }
+
     return { gx, gy };
   }
 
@@ -348,31 +404,56 @@ const Stab = (() => {
   // kept up with playback.
   function enclosed(g, w, h, thr) {
     let x0 = w, x1 = -1, y0 = h, y1 = -1;
-    for (let y = 0, i = 0; y < h; y++)
-      for (let x = 0; x < w; x++, i++)
-        if (g[i] >= thr) {
-          if (x < x0) x0 = x; if (x > x1) x1 = x;
-          if (y < y0) y0 = y; if (y > y1) y1 = y;
-        }
+    const len = w * h;
+    for (let i = 0; i < len; i++) {
+      if (g[i] >= thr) {
+        const x = i % w;
+        const y = (i / w) | 0;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
     if (x1 < 0) return { n: 0, cx: 0, cy: 0 };
     x0 = Math.max(0, x0 - 1); x1 = Math.min(w - 1, x1 + 1);
     y0 = Math.max(0, y0 - 1); y1 = Math.min(h - 1, y1 + 1);
-    const seen = new Uint8Array(w * h), stack = new Int32Array((x1 - x0 + 1) * (y1 - y0 + 1));
+
+    const bw = x1 - x0 + 1;
+    const bh = y1 - y0 + 1;
+    const seen = new Uint8Array(bw * bh);
+    const stack = new Int32Array(bw * bh);
+
     let sp = 0;
-    const push = i => { if (!seen[i] && g[i] < thr) { seen[i] = 1; stack[sp++] = i; } };
-    for (let x = x0; x <= x1; x++) { push(y0 * w + x); push(y1 * w + x); }
-    for (let y = y0; y <= y1; y++) { push(y * w + x0); push(y * w + x1); }
+    const push = (x, y) => {
+        const idx_local = (y - y0) * bw + (x - x0);
+        if (!seen[idx_local] && g[y * w + x] < thr) {
+            seen[idx_local] = 1;
+            stack[sp++] = (y << 16) | x;
+        }
+    };
+
+    for (let x = x0; x <= x1; x++) { push(x, y0); push(x, y1); }
+    for (let y = y0; y <= y1; y++) { push(x0, y); push(x1, y); }
+
     while (sp) {
-      const i = stack[--sp], x = i % w, y = (i - x) / w;
-      if (x > x0) push(i - 1);
-      if (x < x1) push(i + 1);
-      if (y > y0) push(i - w);
-      if (y < y1) push(i + w);
+      const val = stack[--sp];
+      const x = val & 0xFFFF;
+      const y = val >>> 16;
+
+      if (x > x0) push(x - 1, y);
+      if (x < x1) push(x + 1, y);
+      if (y > y0) push(x, y - 1);
+      if (y < y1) push(x, y + 1);
     }
+
     let n = 0, sx = 0, sy = 0;
-    for (let y = y0; y <= y1; y++)
-      for (let x = x0, i = y * w + x0; x <= x1; x++, i++)
-        if (g[i] < thr && !seen[i]) { n++; sx += x; sy += y; }
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const idx_local = (y - y0) * bw + (x - x0);
+        if (!seen[idx_local] && g[y * w + x] < thr) {
+          n++; sx += x; sy += y;
+        }
+      }
+    }
     return { n, cx: sx / Math.max(n, 1), cy: sy / Math.max(n, 1) };
   }
 
