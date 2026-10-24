@@ -333,5 +333,70 @@ function sun(im, cx, cy, r, peak, u) {
   ok(lost === 0 && worst < 3, `a thin crescent: ${lost} frames lost, worst ${worst.toFixed(1)} px`);
 }
 
+// ---------------------------------------------------------------------------
+// 13. The lit-sky search's three image passes skip the work at the edge where
+//     no tap can leave the frame: blur and scharr clamp only there, and the
+//     halving is written out. Each has to give what clamping every tap gives,
+//     to the bit, on frames narrower than the blur kernel as well as wider.
+//     Mutations: the blur's direct taps starting a pixel early, scharr's row
+//     below left unclamped, the halving stepping rows by twice its output
+//     width.
+// ---------------------------------------------------------------------------
+{
+  const cl = (v, n) => Math.min(n - 1, Math.max(0, v));
+  const blur = (src, w, h, sigma) => {         // as they were
+    const r = Math.max(1, Math.ceil(3 * sigma)), k = new Float32Array(2 * r + 1);
+    let sum = 0;
+    for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); sum += k[i + r]; }
+    for (let i = 0; i < k.length; i++) k[i] /= sum;
+    const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let a = 0;
+      for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + cl(x + i, w)];
+      tmp[y * w + x] = a;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let a = 0;
+      for (let i = -r; i <= r; i++) a += k[i + r] * tmp[cl(y + i, h) * w + x];
+      out[y * w + x] = a;
+    }
+    return out;
+  };
+  const scharr = (src, w, h) => {
+    const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
+    const at = (x, y) => src[cl(y, h) * w + cl(x, w)];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1)) + 10 * (at(x + 1, y) - at(x - 1, y))
+                    + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
+      gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1)) + 10 * (at(x, y + 1) - at(x, y - 1))
+                    + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+    }
+    return { gx, gy };
+  };
+  const shrink = (g, w, h, s) => {
+    const W = Math.floor(w / s), H = Math.floor(h / s), out = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let acc = 0;
+      for (let j = 0; j < s; j++) for (let i = 0; i < s; i++) acc += g[(y * s + j) * w + x * s + i];
+      out[y * W + x] = acc / (s * s);
+    }
+    return out;
+  };
+  const same = (a, b) => a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+  let seed = 11;
+  const level = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % 256;
+  const bad = [];
+  for (const [w, h] of [[1, 1], [1, 9], [9, 1], [4, 3], [11, 12], [13, 11], [61, 34], [480, 270]]) {
+    const g = Uint8Array.from({ length: w * h }, level);
+    const f = Float32Array.from(g, v => v / 3);
+    for (const sigma of [0.3, 1.5, 4])
+      if (!same(Stab.blur(f, w, h, sigma), blur(f, w, h, sigma))) bad.push(`blur ${w}x${h} sigma ${sigma}`);
+    const a = Stab.scharr(f, w, h), b = scharr(f, w, h);
+    if (!same(a.gx, b.gx) || !same(a.gy, b.gy)) bad.push(`scharr ${w}x${h}`);
+    if (!same(Stab.shrink(g, w, h, 2).d, shrink(g, w, h, 2))) bad.push(`shrink ${w}x${h}`);
+  }
+  ok(!bad.length, `the image passes differ from clamping every tap: ${bad.join(', ')}`);
+}
+
 console.log(fails ? `${fails} FAILURES` : 'stabilise.js OK — matches tools/stab_solar.py');
 process.exit(fails ? 1 : 0);
