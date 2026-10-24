@@ -98,7 +98,7 @@ const Radio = (() => {
   // ring at rho is clear of the Moon below rho = sep - rm and beyond sep + rm,
   // where a node adds exactly zero, so the sum starts and stops one node
   // outside the two. Each alpha's terms are the same and added in the same
-  // order, so the result is the same to the bit, and run() takes 40 % less.
+  // order, so the result is the same to the bit.
   function fluxObscurations(sep, rs, rm, alphas, n = 800) {
     const acc = new Float64Array(alphas.length);
     if (sep >= rs + rm) return acc;
