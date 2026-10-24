@@ -84,9 +84,20 @@ const Stab = (() => {
   // Box average by an integer factor, which is what INTER_AREA does when the
   // factor divides evenly and is the only resampling that does not alias a
   // hard limb into a ring of false edges.
+  //
+  // Every caller halves, and for a factor of two the two inner loops cost more
+  // than the four reads they make, so that case is written out. What it is
+  // given is grey levels and 0/1 masks, whose sums are exact in any order, so
+  // the result is the same to the bit.
   function shrink(g, w, h, s) {
     const W = Math.floor(w / s), H = Math.floor(h / s);
     const out = new Float32Array(W * H), n = s * s;
+    if (s === 2) {
+      for (let y = 0; y < H; y++)
+        for (let x = 0, i = 2 * y * w; x < W; x++, i += 2)
+          out[y * W + x] = (g[i] + g[i + 1] + g[i + w] + g[i + w + 1]) / n;
+      return { d: out, w: W, h: H };
+    }
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         let acc = 0;
@@ -100,6 +111,9 @@ const Stab = (() => {
     return { d: out, w: W, h: H };
   }
 
+  // The edge is clamped, and only a pixel within r of it needs the clamp: the
+  // rest read their taps directly. Same taps in the same order, so the same
+  // sums to the bit.
   function blur(src, w, h, sigma) {
     const r = Math.max(1, Math.ceil(3 * sigma)), k = new Float32Array(2 * r + 1);
     let sum = 0;
@@ -109,13 +123,15 @@ const Stab = (() => {
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + Math.min(w - 1, Math.max(0, x + i))];
+        if (x >= r && x < w - r) for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + x + i];
+        else for (let i = -r; i <= r; i++) a += k[i + r] * src[y * w + Math.min(w - 1, Math.max(0, x + i))];
         tmp[y * w + x] = a;
       }
     for (let y = 0; y < h; y++)
       for (let x = 0; x < w; x++) {
         let a = 0;
-        for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
+        if (y >= r && y < h - r) for (let i = -r; i <= r; i++) a += k[i + r] * tmp[(y + i) * w + x];
+        else for (let i = -r; i <= r; i++) a += k[i + r] * tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x];
         out[y * w + x] = a;
       }
     return out;
@@ -123,18 +139,23 @@ const Stab = (() => {
 
   // Scharr, not Sobel: the same 3x3 cost with a much flatter response to edge
   // orientation, which matters when what is being scored is a circle.
+  //
+  // The neighbouring rows are clamped once a row and the neighbouring columns
+  // once a pixel, and each of the eight neighbours is read once, rather than
+  // every read going through a closure that clamped both coordinates.
   function scharr(src, w, h) {
     const gx = new Float32Array(w * h), gy = new Float32Array(w * h);
-    const at = (x, y) => src[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    for (let y = 0; y < h; y++)
+    for (let y = 0; y < h; y++) {
+      const up = Math.max(0, y - 1) * w, row = y * w, dn = Math.min(h - 1, y + 1) * w;
       for (let x = 0; x < w; x++) {
-        gx[y * w + x] = 3 * (at(x + 1, y - 1) - at(x - 1, y - 1))
-                     + 10 * (at(x + 1, y) - at(x - 1, y))
-                      + 3 * (at(x + 1, y + 1) - at(x - 1, y + 1));
-        gy[y * w + x] = 3 * (at(x - 1, y + 1) - at(x - 1, y - 1))
-                     + 10 * (at(x, y + 1) - at(x, y - 1))
-                      + 3 * (at(x + 1, y + 1) - at(x + 1, y - 1));
+        const xl = Math.max(0, x - 1), xr = Math.min(w - 1, x + 1);
+        const ul = src[up + xl], uc = src[up + x], ur = src[up + xr];
+        const ml = src[row + xl], mr = src[row + xr];
+        const dl = src[dn + xl], dc = src[dn + x], dr = src[dn + xr];
+        gx[row + x] = 3 * (ur - ul) + 10 * (mr - ml) + 3 * (dr - dl);
+        gy[row + x] = 3 * (dl - ul) + 10 * (dc - uc) + 3 * (dr - ur);
       }
+    }
     return { gx, gy };
   }
 
@@ -546,7 +567,7 @@ const Stab = (() => {
   }
 
   return { grey, levels, locate, bootstrap, tracker, clean, fitWindow, fitLimb, darkDisk,
-           coarse, kasa, enclosed, shrink,
+           coarse, kasa, enclosed, shrink, blur, scharr,
            K: { THR_PHOT, SAT, MIN_CONTRAST, BRIGHT_SKY, CORONA_THR, JUMP_MAX, REACQUIRE, MIN_PIX } };
 })();
 
