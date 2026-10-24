@@ -307,6 +307,57 @@ for (const i of [300, 600]) {
   ok(top <= vis + 0.005, `Rome 2026-08-12: largest obscuration with the Sun up ${(100 * top).toFixed(2)} % against ${(100 * vis).toFixed(2)} % from Bess.local`);
 }
 
+// The flux obscuration of run()'s fourteen alphas is one pass over the nodes,
+// and only over the nodes the Moon can reach. It has to give what one pass per
+// alpha over every node gives, to the bit, for an annular and a total Moon,
+// at the radii of a real run and with the separation put exactly where a
+// node's ring starts or stops touching the Moon. (Mutations: starting a node
+// past the first one the Moon reaches, or stopping a node short of the last;
+// multiplying the geometry together before the limb darkening, as hoisting it
+// out of the loop over alpha would. Each fails. Multiplying in the node
+// weight first does not, and is not a defect: 1, 2 and 4 are exact.)
+{
+  const each = (sep, rs, rm, alpha, n = 800) => {      // as it was
+    if (sep >= rs + rm) return 0;
+    if (sep <= rm - rs) return 1;
+    const h = (Math.PI / 2) / n;
+    let acc = 0;
+    for (let k = 0; k <= n; k++) {
+      const th = k * h, ct = Math.max(0, Math.cos(th)), st = Math.sin(th);
+      const rho = rs * st;
+      let phi;
+      if (rho <= rm - sep) phi = Math.PI;
+      else if (rho >= sep + rm || rho <= sep - rm) phi = 0;
+      else phi = Math.acos(Math.min(1, Math.max(-1,
+        (rho * rho + sep * sep - rm * rm) / (2 * rho * sep))));
+      const f = Math.pow(ct, alpha) * 2 * phi * st * ct;
+      acc += f * (k === 0 || k === n ? 1 : (k % 2 ? 4 : 2));
+    }
+    return acc * h / 3 / (2 * Math.PI / (alpha + 2));
+  };
+  const aL = T.wavelength_nm.map(Radio.alphaHestroffer), lo = Math.min(...aL), hi = Math.max(...aL);
+  const nodes = Array.from({ length: 14 }, (_, i) => lo + (hi - lo) * i / 13);
+  const h = (Math.PI / 2) / 800;
+  let n = 0;
+  const off = [];
+  // The last two pairs are La Figuera on 2026-08-12 and Sevilla on 2028-01-26.
+  for (const [rs, rm] of [[1, 0.9], [1, 1.02], [0.26448, 0.27305], [0.30030, 0.27314]]) {
+    const seps = Array.from({ length: 121 }, (_, i) => (rs + rm) * i / 120);
+    for (let k = 3; k <= 800; k += 41)
+      for (const s of [rm + rs * Math.sin(k * h), rs * Math.sin(k * h) - rm])
+        if (s > 0 && s < rs + rm) seps.push(s, s * (1 - 2e-16), s * (1 + 2e-16));
+    for (const sep of seps) {
+      const all = Radio.fluxObscurations(sep, rs, rm, nodes);
+      nodes.forEach((a, j) => {
+        n++;
+        if (!Object.is(all[j], each(sep, rs, rm, a)) || !Object.is(Radio.fluxObscuration(sep, rs, rm, a), all[j]))
+          off.push(`rs=${rs} rm=${rm} sep=${sep} alpha=${a.toFixed(3)}`);
+      });
+    }
+  }
+  ok(!off.length, `${off.length} of ${n} flux obscurations differ from one pass per alpha, first ${off[0]}`);
+}
+
 // A refused request is not a table. load() kept whatever parsed, an error
 // page included, and every later run read it. (Mutation: the old load that
 // never looks at the status; the second check fails.)
