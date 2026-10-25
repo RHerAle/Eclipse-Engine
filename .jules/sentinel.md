@@ -1,0 +1,4 @@
+## 2026-08-01 - [Overpass QL Injection]
+**Vulnerability:** String concatenation of user inputs (`lat`, `lon`, `radiusM`) into an Overpass QL query string without sanitization or casting allowed malicious inputs to inject arbitrary query parameters and clauses into the request to the Overpass API.
+**Learning:** External API queries must have strictly typed arguments. In JS, when building query strings manually, it's easy to assume arguments will be numbers when they might be strings containing injection vectors.
+**Prevention:** Always coerce and validate numeric inputs (e.g., using `Number()` and `Number.isNaN()`) before interpolating them into API query strings.
