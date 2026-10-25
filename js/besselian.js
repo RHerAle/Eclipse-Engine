@@ -73,11 +73,16 @@ const Bess = (() => {
     const su = e1 * cd1 + c * sd1;
     if (Math.abs(su) >= 1) return null;
     const cu = Math.sqrt(1 - su * su);
-    const H = Math.atan2(px, c * cd1 - e1 * sd1);
+    const H_x = c * cd1 - e1 * sd1;
+    // Math.cos(Math.atan2(px, H_x)) is equivalent to H_x / Math.sqrt(px * px + H_x * H_x)
+    // Avoid chained transcendent functions on hot path to reduce V8 overhead
+    const nrm = Math.sqrt(px * px + H_x * H_x);
+    const cosH = nrm > 0 ? H_x / nrm : 1;
+    const H = Math.atan2(px, H_x);
     const lat = Math.atan2(su, SQ * cu) * R2D;
     let lon = (H - mu + dmu) * R2D;
     lon = ((lon + 180) % 360 + 360) % 360 - 180;
-    const zeta = SQ * su * sd + cu * Math.cos(H) * cd;
+    const zeta = SQ * su * sd + cu * cosH * cd;
     return { lat, lon, zeta, H, cu };
   }
 
