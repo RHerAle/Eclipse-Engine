@@ -283,13 +283,20 @@ const Terrain = (() => {
    * never as part of anything else.
    */
   async function buildings(lat, lon, radiusM) {
-    radiusM = radiusM || 400;
+    const numRadiusM = Number(radiusM) || 400;
+    const numLat = Number(lat);
+    const numLon = Number(lon);
+
+    if (Number.isNaN(numLat) || Number.isNaN(numLon) || Number.isNaN(numRadiusM)) {
+      throw new Error('Invalid coordinates or radius provided to buildings query');
+    }
+
     // `maxsize` is the memory the query declares, and the server admits a
     // query only while it fits in half of what is free: the default, 512 MiB,
     // waits for a whole GiB. The densest places measured in September 2026,
     // Amsterdam (1415 buildings within 400 m), Tokyo and Manhattan, each ran
     // in 4 MiB.
-    const q = `[out:json][timeout:25][maxsize:33554432];way["building"](around:${radiusM},${lat},${lon});out geom;`;
+    const q = `[out:json][timeout:25][maxsize:33554432];way["building"](around:${numRadiusM},${numLat},${numLon});out geom;`;
     // The server's own limit is the 25 s in the query; this one covers a
     // server that never gets to apply it.
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), WAIT_MS);
