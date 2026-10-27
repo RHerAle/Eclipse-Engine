@@ -333,7 +333,8 @@ const Terrain = (() => {
         const seg = [g[i], g[i + 1]].map(q => {
           const dy = (q.lat - lat) * 111132.9;
           const dx = (q.lon - lon) * 111319.5 * Math.cos(lat * D2R);
-          return { az: (Math.atan2(dx, dy) / D2R + 360) % 360, dist: Math.hypot(dx, dy) };
+          // Math.sqrt(dx*dx + dy*dy) avoids V8 engine overhead from Math.hypot
+          return { az: (Math.atan2(dx, dy) / D2R + 360) % 360, dist: Math.sqrt(dx * dx + dy * dy) };
         });
         const dist = Math.max(3, Math.min(seg[0].dist, seg[1].dist));
         out.push({ az0: seg[0].az, az1: seg[1].az, distM: dist, heightM: h, guess,
