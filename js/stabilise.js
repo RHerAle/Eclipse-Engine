@@ -248,7 +248,8 @@ const Stab = (() => {
     const pts = [];
     for (let dy = -r - 1; dy <= r + 1; dy++)
       for (let dx = -r - 1; dx <= r + 1; dx++) {
-        const d = Math.hypot(dx, dy);
+        // Math.sqrt(dx*dx + dy*dy) avoids V8 engine overhead from Math.hypot
+        const d = Math.sqrt(dx * dx + dy * dy);
         if (Math.abs(d - r) < 1) pts.push([dx, dy, dx / Math.max(d, 1e-6), dy / Math.max(d, 1e-6)]);
       }
     k = { pts, w: 1 / Math.max(pts.length, 1) };
@@ -345,7 +346,8 @@ const Stab = (() => {
       keep = new Uint8Array(xs.length);
       let n = 0;
       for (let i = 0; i < xs.length; i++) {
-        const x = xs[i], y = ys[i], dx = x - fit.cx, dy = y - fit.cy, d = Math.hypot(dx, dy);
+        // Math.sqrt(dx*dx + dy*dy) avoids V8 engine overhead from Math.hypot
+        const x = xs[i], y = ys[i], dx = x - fit.cx, dy = y - fit.cy, d = Math.sqrt(dx * dx + dy * dy);
         if (!(Math.abs(d - fit.r) < tol)) continue;
         const ux = dx / d, uy = dy / d;
         if (mask[y * w + x] ? on(x + ux, y + uy) : !on(x - ux, y - uy)) continue;
@@ -476,7 +478,8 @@ const Stab = (() => {
       // A centre that moves further than the budget for the elapsed time is
       // lock loss, not motion. The budget scales with the gap, so a fit after
       // a few dropped frames is not rejected merely for having had time to move.
-      if (!res || (prev && Math.hypot(res.cx - prev[0], res.cy - prev[1]) > JUMP_MAX * Math.max(1, gap)))
+      // Math.sqrt(dx*dx + dy*dy) avoids V8 engine overhead from Math.hypot
+      if (!res || (prev && Math.sqrt((res.cx - prev[0]) * (res.cx - prev[0]) + (res.cy - prev[1]) * (res.cy - prev[1])) > JUMP_MAX * Math.max(1, gap)))
         return null;
       prev = [res.cx, res.cy]; r = res.r; last = t;
       return res;
