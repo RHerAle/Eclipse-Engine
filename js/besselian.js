@@ -862,18 +862,30 @@ const Bess = (() => {
         }
         if (cmin > cmax || cmin > 1 || cmax < -1) continue;
         const h0 = Math.acos(clamp(cmax)), h1 = Math.acos(clamp(cmin));
-        for (const arc of [[h0, h1], [-h1, -h0]]) {
-          const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
-          const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
+        // Precalculate row and declination trigonometric products outside the pass loop.
+        const r_sp_sd = r.sp * sd;
+        const r_cp_cd = r.cp * cd;
+        const r_rs_sd = r.rs * sd;
+        const r_rs_cd = r.rs * cd;
+        const r_rc_sd = r.rc * sd;
+        const jnlon = j * nlon;
+
+        for (let pass = 0; pass < 2; pass++) {
+          const a0 = pass === 0 ? h0 : -h1;
+          const a1 = pass === 0 ? h1 : -h0;
+          const lo = Math.ceil((a0 * R2D - base + 180) / 360 * nlon - 0.5);
+          const hi = Math.floor((a1 * R2D - base + 180) / 360 * nlon - 0.5);
           for (let ii = lo; ii <= hi; ii++) {
             const i = ((ii % nlon) + nlon) % nlon;
             const cH = cHs[i];
             // Geodetic horizon, the same one obsAt and local() use.
-            if (r.sp * sd + r.cp * cd * cH <= 0) continue;
-            const zeta = r.rs * sd + r.rc * cH * cd;
-            const m = hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
+            if (r_sp_sd + r_cp_cd * cH <= 0) continue;
+            const zeta = r_rs_sd + r.rc * cH * cd;
+            const dx = e.x - r.rc * sHs[i];
+            const dy = e.y - (r_rs_cd - r_rc_sd * cH);
+            const m = Math.sqrt(dx * dx + dy * dy);
             const L1 = e.l1 - zeta * B.tan_f1;
-            const idx = j * nlon + i;
+            const idx = jnlon + i;
             const vm = L1 - m;
             if (vm > vis[idx]) { vis[idx] = vm; tvis[idx] = k; }
             if (m >= L1) continue;
