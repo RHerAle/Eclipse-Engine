@@ -107,6 +107,16 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Input validation against Overpass QL injection
+  let invalidPassed = false;
+  try {
+    await Terrain.buildings('43.238);out;node(', -4.818);
+    invalidPassed = true;
+  } catch (e) {
+    ok(e instanceof TypeError, 'malicious latitude parameter throws TypeError');
+  }
+  ok(!invalidPassed, 'buildings rejects string injection in latitude');
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
