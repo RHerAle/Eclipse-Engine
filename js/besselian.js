@@ -24,8 +24,21 @@ const Bess = (() => {
   // Math.hypot.
   const hypot = (x, y) => Math.sqrt(x * x + y * y);
 
-  const poly = (c, t) => { let v = 0; for (let i = c.length - 1; i >= 0; i--) v = v * t + c[i]; return v; };
-  const dpoly = (c, t) => { let v = 0; for (let i = c.length - 1; i >= 1; i--) v = v * t + i * c[i]; return v; };
+  // Polynomial evaluation unrolled for common fixed degree counts to reduce loop overhead in hot paths.
+  const poly = (c, t) => {
+    const n = c.length;
+    if (n === 4) return c[0] + t * (c[1] + t * (c[2] + t * c[3]));
+    if (n === 3) return c[0] + t * (c[1] + t * c[2]);
+    if (n === 2) return c[0] + t * c[1];
+    let v = 0; for (let i = n - 1; i >= 0; i--) v = v * t + c[i]; return v;
+  };
+  const dpoly = (c, t) => {
+    const n = c.length;
+    if (n === 4) return c[1] + t * (2 * c[2] + t * 3 * c[3]);
+    if (n === 3) return c[1] + t * 2 * c[2];
+    if (n === 2) return c[1];
+    let v = 0; for (let i = n - 1; i >= 1; i--) v = v * t + i * c[i]; return v;
+  };
 
   // Elements at t hours from t0 (TT). Angles come back in radians.
   function evaluate(B, t) {
@@ -132,10 +145,12 @@ const Bess = (() => {
   }
 
   // Observer constants, computed once per site instead of once per time step.
+  // Precomputes sp = Math.sin(p) and cp = Math.cos(p) to avoid re-evaluating trig functions in obsAt / visAt.
   function observer(B, lat, lon, elev) {
     const p = lat * D2R, h = (elev || 0) / 1000 / 6378.1366;
-    const N = 1 / Math.sqrt(1 - E2 * Math.sin(p) ** 2);
-    return { p, lon: lon * D2R, rc: (N + h) * Math.cos(p), rs: (N * (1 - E2) + h) * Math.sin(p), dmu: dmuOf(B) };
+    const sp = Math.sin(p), cp = Math.cos(p);
+    const N = 1 / Math.sqrt(1 - E2 * sp * sp);
+    return { p, sp, cp, lon: lon * D2R, rc: (N + h) * cp, rs: (N * (1 - E2) + h) * sp, dmu: dmuOf(B) };
   }
 
   // `e`, `xi` and `eta` come back with the rest. Every caller that wants the
@@ -762,7 +777,9 @@ const Bess = (() => {
     // obscuration between the band the map painted and the figure the panel
     // gave for the same point. A map that contradicts its own answer is
     // worse than a coarse map.
-    if (Math.sin(o.p) * sd + Math.cos(o.p) * cd * cH <= 0) return 0;
+    const sp = o.sp !== undefined ? o.sp : Math.sin(o.p);
+    const cp = o.cp !== undefined ? o.cp : Math.cos(o.p);
+    if (sp * sd + cp * cd * cH <= 0) return 0;
     const zeta = o.rs * sd + o.rc * cH * cd;
     const L1 = poly(B.l1, t) - zeta * B.tan_f1;
     const m = hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
@@ -789,7 +806,9 @@ const Bess = (() => {
     const d = poly(B.d_deg, t) * D2R, mu = poly(B.mu_deg, t) * D2R;
     const H = mu + o.lon - o.dmu;
     const cH = Math.cos(H), sd = Math.sin(d), cd = Math.cos(d);
-    if (Math.sin(o.p) * sd + Math.cos(o.p) * cd * cH <= 0) return -1;
+    const sp = o.sp !== undefined ? o.sp : Math.sin(o.p);
+    const cp = o.cp !== undefined ? o.cp : Math.cos(o.p);
+    if (sp * sd + cp * cd * cH <= 0) return -1;
     const zeta = o.rs * sd + o.rc * cH * cd;
     const L1 = poly(B.l1, t) - zeta * B.tan_f1;
     const m = hypot(x - o.rc * Math.sin(H), y - (o.rs * cd - o.rc * cH * sd));
@@ -893,7 +912,7 @@ const Bess = (() => {
       for (let i = 0; i < nlon; i++) {
         const idx = j * nlon + i, v = grid[idx];
         if (!(v > 0 && v < 1)) continue;
-        const o = { p: lat, lon: (-180 + (i + 0.5) * 360 / nlon) * D2R,
+        const o = { p: lat, sp: r.sp, cp: r.cp, lon: (-180 + (i + 0.5) * 360 / nlon) * D2R,
                     rc: r.rc, rs: r.rs, dmu };
         const w = timeMax(B, o, tmax[idx], nt, T_SPAN);
         if (w > v) grid[idx] = w;
@@ -923,7 +942,7 @@ const Bess = (() => {
         const idx = j * nlon + i;
         if (!near[idx]) continue;
         const lon = -180 + (i + 0.5) * 360 / nlon;
-        const o = { p: lat, lon: lon * D2R, rc: r.rc, rs: r.rs, dmu };
+        const o = { p: lat, sp: r.sp, cp: r.cp, lon: lon * D2R, rc: r.rc, rs: r.rs, dmu };
         const w = (near[idx] === 1 && tvis[idx] >= 0)
           ? timeMax(B, o, tvis[idx], nt, T_SPAN, t => visAt(B, o, t))
           : visMargin(B, lat * R2D, lon, { nt, o });
