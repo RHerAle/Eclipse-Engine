@@ -283,7 +283,17 @@ const Terrain = (() => {
    * never as part of anything else.
    */
   async function buildings(lat, lon, radiusM) {
-    radiusM = radiusM || 400;
+    // Explicitly coerce inputs to numbers and check for NaN to prevent Overpass QL injection
+    const numLat = Number(lat);
+    const numLon = Number(lon);
+    const numRadius = radiusM === undefined ? 400 : Number(radiusM);
+    if (Number.isNaN(numLat) || Number.isNaN(numLon) || Number.isNaN(numRadius)) {
+      throw new Error('invalid coordinates or radius');
+    }
+    lat = numLat;
+    lon = numLon;
+    radiusM = numRadius;
+
     // `maxsize` is the memory the query declares, and the server admits a
     // query only while it fits in half of what is free: the default, 512 MiB,
     // waits for a whole GiB. The densest places measured in September 2026,

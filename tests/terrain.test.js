@@ -107,6 +107,13 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Non-numeric inputs to buildings() throw an error instantly without network calls (Overpass QL injection protection).
+  let fetchCalled = false;
+  global.fetch = () => { fetchCalled = true; return Promise.resolve({ ok: true, json: async () => ({ elements: [] }) }); };
+  const q7 = Terrain.buildings("43.238); out;", -4.818, 400);
+  const s7 = await settled(q7);
+  ok(s7.startsWith('rejected') && !fetchCalled, 'malicious non-numeric lat input throws error before fetch');
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
