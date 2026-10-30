@@ -849,9 +849,10 @@ const Bess = (() => {
         const H = e.mu + (-180 + (i + 0.5) * 360 / nlon) * D2R - dmu;
         cHs[i] = Math.cos(H); sHs[i] = Math.sin(H);
       }
+      const tan_d_neg = -sd / cd;
       for (let j = 0; j < nlat; j++) {
         const r = rows[j];
-        let cmin = -r.tan * sd / cd, cmax = 1;           // el Sol sobre el horizonte
+        let cmin = r.tan * tan_d_neg, cmax = 1;           // el Sol sobre el horizonte
         const P = r.rs * cd - e.y, Q = r.rc * sd;        // |eta - y| < l1
         if (Math.abs(Q) < 1e-12) {
           if (Math.abs(P) >= e.l1) continue;
@@ -862,24 +863,34 @@ const Bess = (() => {
         }
         if (cmin > cmax || cmin > 1 || cmax < -1) continue;
         const h0 = Math.acos(clamp(cmax)), h1 = Math.acos(clamp(cmin));
-        for (const arc of [[h0, h1], [-h1, -h0]]) {
-          const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
-          const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
+        const sp_sd = r.sp * sd, cp_cd = r.cp * cd;
+        const rs_sd = r.rs * sd, rc_cd = r.rc * cd;
+        const y0 = e.y - r.rs * cd, rc_sd = r.rc * sd;
+        const arc0_0 = h0, arc0_1 = h1, arc1_0 = -h1, arc1_1 = -h0;
+        for (let aIdx = 0; aIdx < 2; aIdx++) {
+          const a0 = aIdx === 0 ? arc0_0 : arc1_0;
+          const a1 = aIdx === 0 ? arc0_1 : arc1_1;
+          const lo = Math.ceil((a0 * R2D - base + 180) / 360 * nlon - 0.5);
+          const hi = Math.floor((a1 * R2D - base + 180) / 360 * nlon - 0.5);
+          let i = ((lo % nlon) + nlon) % nlon;
           for (let ii = lo; ii <= hi; ii++) {
-            const i = ((ii % nlon) + nlon) % nlon;
             const cH = cHs[i];
-            // Geodetic horizon, the same one obsAt and local() use.
-            if (r.sp * sd + r.cp * cd * cH <= 0) continue;
-            const zeta = r.rs * sd + r.rc * cH * cd;
-            const m = hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
+            if (sp_sd + cp_cd * cH <= 0) {
+              i++; if (i === nlon) i = 0;
+              continue;
+            }
+            const zeta = rs_sd + rc_cd * cH;
+            const m = hypot(e.x - r.rc * sHs[i], y0 + rc_sd * cH);
             const L1 = e.l1 - zeta * B.tan_f1;
             const idx = j * nlon + i;
             const vm = L1 - m;
             if (vm > vis[idx]) { vis[idx] = vm; tvis[idx] = k; }
-            if (m >= L1) continue;
-            const L2 = e.l2 - zeta * B.tan_f2;
-            const o = obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
-            if (o > grid[idx]) { grid[idx] = o; tmax[idx] = k; }
+            if (m < L1) {
+              const L2 = e.l2 - zeta * B.tan_f2;
+              const o = obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
+              if (o > grid[idx]) { grid[idx] = o; tmax[idx] = k; }
+            }
+            i++; if (i === nlon) i = 0;
           }
         }
       }
