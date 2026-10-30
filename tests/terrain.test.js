@@ -107,6 +107,15 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Invalid parameters fail validation before making network requests.
+  let fetchCalled = false;
+  global.fetch = () => { fetchCalled = true; return Promise.reject(new Error('should not fetch')); };
+  ok((await settled(Terrain.buildings('invalid', -4.818, 400))).startsWith('rejected'),
+     'Terrain.buildings rejects non-numeric lat');
+  ok((await settled(Terrain.buildings(43.238, '0); node(1);', 400))).startsWith('rejected'),
+     'Terrain.buildings rejects injection payload lon');
+  ok(!fetchCalled, 'invalid parameters fail validation without making a network call');
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
