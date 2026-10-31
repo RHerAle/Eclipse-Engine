@@ -1,0 +1,4 @@
+## 2026-10-31 - Overpass QL String Injection via Geographic Parameters
+**Vulnerability:** In `Terrain.buildings(lat, lon, radiusM)`, raw user-supplied arguments were directly interpolated into the Overpass QL query string without type coercion or bounds validation, enabling Overpass QL injection and unexpected network queries.
+**Learning:** Even in client-side JavaScript applications without a SQL database, string-interpolated query languages (such as Overpass QL) sent to external APIs are vulnerable to injection attacks if inputs are not strictly coerced and validated.
+**Prevention:** Explicitly coerce arguments to numbers using `Number()`, check with `Number.isFinite()` and `Number.isNaN()`, and enforce valid physical/geographic coordinate and radius ranges before constructing query strings.

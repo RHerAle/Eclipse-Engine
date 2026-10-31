@@ -107,6 +107,38 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: Overpass QL input validation and injection prevention.
+  let fetchCalled = false;
+  global.fetch = () => { fetchCalled = true; return Promise.resolve({ ok: true, json: async () => ({ elements: [] }) }); };
+
+  const invalidInputs = [
+    ['43.238);out;', -4.818, 400],
+    [43.238, '-4.818);(._;>;);out body;', 400],
+    [43.238, -4.818, '400);node["amenity"="bar"];out;'],
+    [NaN, -4.818, 400],
+    [43.238, NaN, 400],
+    [43.238, -4.818, NaN],
+    [Infinity, -4.818, 400],
+    [91, -4.818, 400],
+    [-91, -4.818, 400],
+    [43.238, 181, 400],
+    [43.238, -181, 400],
+    [43.238, -4.818, 0],
+    [43.238, -4.818, -100]
+  ];
+
+  for (const args of invalidInputs) {
+    fetchCalled = false;
+    const s = await settled(Terrain.buildings(...args));
+    ok(s.startsWith('rejected: invalid coordinates or radius') && !fetchCalled,
+       `invalid input ${JSON.stringify(args)} rejected before network fetch: ${s}`);
+  }
+
+  // Valid inputs (numeric strings or valid numbers) should still succeed.
+  fetchCalled = false;
+  const sValid = await settled(Terrain.buildings('43.238', '-4.818', '400'));
+  ok(sValid === 'resolved' && fetchCalled, 'valid numeric string inputs are accepted and coerced correctly');
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
