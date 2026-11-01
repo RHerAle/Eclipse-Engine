@@ -107,6 +107,16 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: Overpass QL injection / invalid parameter rejection.
+  const badLat = settled(Terrain.buildings('43.238);node;(', -4.818, 400));
+  ok((await badLat).startsWith('rejected'), 'injection in lat is rejected');
+  const badRadius = settled(Terrain.buildings(43.238, -4.818, '400);out;'));
+  ok((await badRadius).startsWith('rejected'), 'injection in radius is rejected');
+  const negRadius = settled(Terrain.buildings(43.238, -4.818, -100));
+  ok((await negRadius).startsWith('rejected'), 'negative radius is rejected');
+  const nanLon = settled(Terrain.buildings(43.238, NaN, 400));
+  ok((await nanLon).startsWith('rejected'), 'NaN coordinate is rejected');
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
