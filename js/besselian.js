@@ -865,15 +865,19 @@ const Bess = (() => {
         for (const arc of [[h0, h1], [-h1, -h0]]) {
           const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
           const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
+          // Modulo division in the inner loop has significant integer division overhead in V8.
+          // Maintain a rolling index wrapped with a branch instead.
+          let i = ((lo % nlon) + nlon) % nlon;
           for (let ii = lo; ii <= hi; ii++) {
-            const i = ((ii % nlon) + nlon) % nlon;
-            const cH = cHs[i];
+            const currI = i;
+            if (++i === nlon) i = 0;
+            const cH = cHs[currI];
             // Geodetic horizon, the same one obsAt and local() use.
             if (r.sp * sd + r.cp * cd * cH <= 0) continue;
             const zeta = r.rs * sd + r.rc * cH * cd;
-            const m = hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
+            const m = hypot(e.x - r.rc * sHs[currI], e.y - (r.rs * cd - r.rc * cH * sd));
             const L1 = e.l1 - zeta * B.tan_f1;
-            const idx = j * nlon + i;
+            const idx = j * nlon + currI;
             const vm = L1 - m;
             if (vm > vis[idx]) { vis[idx] = vm; tvis[idx] = k; }
             if (m >= L1) continue;
