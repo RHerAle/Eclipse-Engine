@@ -1,0 +1,4 @@
+## 2026-11-02 - Overpass QL String Injection
+**Vulnerability:** In `Terrain.buildings(lat, lon, radiusM)`, parameters were directly interpolated into an Overpass QL query string (`way["building"](around:${radiusM},${lat},${lon});out geom;`). Unsanitized string or out-of-range inputs allowed arbitrary Overpass QL injection and server resource exhaustion.
+**Learning:** Browser client code querying external domain-specific query APIs (like Overpass API) via string templates must strictly validate and type-coerce numeric query parameters against bounds before constructing queries.
+**Prevention:** Explicitly coerce inputs using `Number()`, verify with `Number.isNaN()` and `Number.isFinite()`, and enforce valid latitude `[-90, 90]`, longitude `[-180, 180]`, and radius `(0, inf)` ranges before building queries.
