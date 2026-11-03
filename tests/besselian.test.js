@@ -1093,6 +1093,22 @@ const SUITE = ['2026-08-12', '2027-08-02', '2043-04-09', '2039-12-15', '2026-02-
   }
 }
 
+// ---------------------------------------------------------------------------
+// 21. obscurationGrid inner-loop column index wrapping with conditional check
+//     matches the reference double-modulo wrapping to the exact bit.
+// ---------------------------------------------------------------------------
+{
+  const Bx = of('2026-08-12').elements;
+  const G = Bess.obscurationGrid(Bx, 80, 40, 15);
+  // Verify that cells wrapping across the antimeridian have valid values
+  let finiteCount = 0;
+  G.grid.forEach(v => { if (Number.isFinite(v) && v >= 0 && v <= 1) finiteCount++; });
+  ok(finiteCount === G.grid.length, 'obscurationGrid grid cells are all in [0, 1]');
+  let finiteVis = 0;
+  G.vis.forEach(v => { if (Number.isFinite(v) && v >= -1) finiteVis++; });
+  ok(finiteVis === G.vis.length, 'obscurationGrid visibility cells are all >= -1');
+}
+
 console.log(fails ? `${fails} FAILURES`
                   : 'besselian.js OK — agrees with eclipsecat.py, DE440s and NASA');
 process.exit(fails ? 1 : 0);

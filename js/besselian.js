@@ -865,21 +865,28 @@ const Bess = (() => {
         for (const arc of [[h0, h1], [-h1, -h0]]) {
           const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
           const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
+          // Avoid integer division/modulo inside the tight inner loop: start at
+          // wrapped index and increment with a simple bounds check.
+          let i = ((lo % nlon) + nlon) % nlon;
           for (let ii = lo; ii <= hi; ii++) {
-            const i = ((ii % nlon) + nlon) % nlon;
             const cH = cHs[i];
             // Geodetic horizon, the same one obsAt and local() use.
-            if (r.sp * sd + r.cp * cd * cH <= 0) continue;
+            if (r.sp * sd + r.cp * cd * cH <= 0) {
+              if (++i === nlon) i = 0;
+              continue;
+            }
             const zeta = r.rs * sd + r.rc * cH * cd;
             const m = hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
             const L1 = e.l1 - zeta * B.tan_f1;
             const idx = j * nlon + i;
             const vm = L1 - m;
             if (vm > vis[idx]) { vis[idx] = vm; tvis[idx] = k; }
-            if (m >= L1) continue;
-            const L2 = e.l2 - zeta * B.tan_f2;
-            const o = obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
-            if (o > grid[idx]) { grid[idx] = o; tmax[idx] = k; }
+            if (m < L1) {
+              const L2 = e.l2 - zeta * B.tan_f2;
+              const o = obscuration(m, (L1 + L2) / 2, (L1 - L2) / 2);
+              if (o > grid[idx]) { grid[idx] = o; tmax[idx] = k; }
+            }
+            if (++i === nlon) i = 0;
           }
         }
       }
