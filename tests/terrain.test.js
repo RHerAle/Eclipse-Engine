@@ -107,6 +107,29 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: Overpass QL query injection and invalid parameters are rejected.
+  const invalidInputs = [
+    ['43.238);out;', -4.818, 400],
+    [43.238, '-4.818);(node;);out;', 400],
+    [43.238, -4.818, '400);out;'],
+    [NaN, -4.818, 400],
+    [43.238, Infinity, 400],
+    [43.238, -4.818, -100],
+    [43.238, -4.818, 0]
+  ];
+  for (const args of invalidInputs) {
+    let err = null;
+    try { await Terrain.buildings(...args); } catch (e) { err = e; }
+    ok(err && err.message === 'invalid coordinates or radius',
+       `invalid input ${JSON.stringify(args)} is rejected`);
+  }
+
+  // Valid string-coercible numeric inputs are accepted and formatted properly.
+  let sentBody;
+  global.fetch = (url, o) => { sentBody = o.body; return Promise.resolve({ ok: true, json: async () => ({ elements: [] }) }); };
+  await Terrain.buildings('43.238', '-4.818', '500');
+  ok(sentBody && sentBody.includes('around:500,43.238,-4.818'), 'numeric strings are coerced and sanitized properly');
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
