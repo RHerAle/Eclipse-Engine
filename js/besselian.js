@@ -865,8 +865,10 @@ const Bess = (() => {
         for (const arc of [[h0, h1], [-h1, -h0]]) {
           const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
           const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
-          for (let ii = lo; ii <= hi; ii++) {
-            const i = ((ii % nlon) + nlon) % nlon;
+          // Maintain wrapped longitude index incrementally across the span
+          // instead of calculating two integer modulos on every inner iteration.
+          let i = ((lo % nlon) + nlon) % nlon;
+          for (let ii = lo; ii <= hi; ii++, (i = (i + 1 === nlon ? 0 : i + 1))) {
             const cH = cHs[i];
             // Geodetic horizon, the same one obsAt and local() use.
             if (r.sp * sd + r.cp * cd * cH <= 0) continue;
