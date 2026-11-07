@@ -107,6 +107,22 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: Invalid coordinates or injection strings reject immediately.
+  const badCoords = [
+    ['43.238); node(1); (', -4.818, 400],
+    [43.238, 'foo', 400],
+    [NaN, -4.818, 400],
+    [Infinity, -4.818, 400],
+    [43.238, -4.818, 'bad'],
+    [43.238, -4.818, -100],
+    [43.238, -4.818, 0]
+  ];
+  for (const [la, lo, r] of badCoords) {
+    const res = await settled(Terrain.buildings(la, lo, r));
+    ok(res.startsWith('rejected: buildings: lat, lon, and radiusM must be valid finite numbers'),
+       `invalid input rejects with TypeError: ${JSON.stringify([la, lo, r])}`);
+  }
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
