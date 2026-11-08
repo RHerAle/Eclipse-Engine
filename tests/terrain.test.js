@@ -107,6 +107,28 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: injection payloads and invalid coordinates/radii are rejected
+  //    before any network query is made.
+  let fetched = false;
+  global.fetch = () => { fetched = true; return Promise.resolve({ ok: true, json: async () => ({ elements: [] }) }); };
+  const badCoords = [
+    ['43.238);out;', -4.818, 400],
+    [43.238, '-4.818);(._;>;);out;', 400],
+    [43.238, -4.818, '400);out;'],
+    [NaN, -4.818, 400],
+    [95, -4.818, 400],
+    [-95, -4.818, 400],
+    [43.238, 185, 400],
+    [43.238, -4.818, -10],
+    [43.238, -4.818, 0]
+  ];
+  for (const args of badCoords) {
+    fetched = false;
+    const s = await settled(Terrain.buildings(...args));
+    ok(s.startsWith('rejected') && !fetched,
+       `invalid or injected arguments (${args.join(', ')}) rejected without network call: ${s}`);
+  }
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
