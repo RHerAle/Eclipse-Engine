@@ -283,13 +283,21 @@ const Terrain = (() => {
    * never as part of anything else.
    */
   async function buildings(lat, lon, radiusM) {
-    radiusM = radiusM || 400;
+    // Security: explicitly coerce and validate inputs to prevent Overpass QL
+    // injection or server resource exhaustion via malicious query interpolation.
+    const latN = Number(lat), lonN = Number(lon);
+    const rN = radiusM === undefined ? 400 : Number(radiusM);
+    if (!Number.isFinite(latN) || latN < -90 || latN > 90 ||
+        !Number.isFinite(lonN) || lonN < -180 || lonN > 180 ||
+        !Number.isFinite(rN) || rN <= 0 || rN > 50000) {
+      throw new Error('invalid coordinates or radius');
+    }
     // `maxsize` is the memory the query declares, and the server admits a
     // query only while it fits in half of what is free: the default, 512 MiB,
     // waits for a whole GiB. The densest places measured in September 2026,
     // Amsterdam (1415 buildings within 400 m), Tokyo and Manhattan, each ran
     // in 4 MiB.
-    const q = `[out:json][timeout:25][maxsize:33554432];way["building"](around:${radiusM},${lat},${lon});out geom;`;
+    const q = `[out:json][timeout:25][maxsize:33554432];way["building"](around:${rN},${latN},${lonN});out geom;`;
     // The server's own limit is the 25 s in the query; this one covers a
     // server that never gets to apply it.
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), WAIT_MS);
@@ -331,8 +339,8 @@ const Terrain = (() => {
       const g = w.geometry;
       for (let i = 0; i + 1 < g.length; i++) {
         const seg = [g[i], g[i + 1]].map(q => {
-          const dy = (q.lat - lat) * 111132.9;
-          const dx = (q.lon - lon) * 111319.5 * Math.cos(lat * D2R);
+          const dy = (q.lat - latN) * 111132.9;
+          const dx = (q.lon - lonN) * 111319.5 * Math.cos(latN * D2R);
           return { az: (Math.atan2(dx, dy) / D2R + 360) % 360, dist: Math.hypot(dx, dy) };
         });
         const dist = Math.max(3, Math.min(seg[0].dist, seg[1].dist));

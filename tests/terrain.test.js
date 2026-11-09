@@ -107,6 +107,28 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: malicious injection or invalid coordinates/radius are rejected
+  //    immediately without making network requests.
+  const invalidInputs = [
+    ['43.2;node(1);out;', -4.8, 400, 'Overpass QL injection in latitude'],
+    [43.2, '-4.8);(._;>;);out;', 400, 'Overpass QL injection in longitude'],
+    [43.2, -4.8, '400);out;', 'Overpass QL injection in radius'],
+    [95, -4.8, 400, 'latitude > 90'],
+    [-95, -4.8, 400, 'latitude < -90'],
+    [43.2, 185, 400, 'longitude > 180'],
+    [43.2, -185, 400, 'longitude < -180'],
+    [43.2, -4.8, 0, 'non-positive radius'],
+    [43.2, -4.8, -100, 'negative radius'],
+    [43.2, -4.8, 60000, 'excessive radius (> 50 km)'],
+    [NaN, -4.8, 400, 'NaN latitude'],
+    [43.2, Infinity, 400, 'infinite longitude']
+  ];
+  for (const [la, lo, r, desc] of invalidInputs) {
+    let err = null;
+    try { await Terrain.buildings(la, lo, r); } catch (e) { err = e; }
+    ok(err && err.message === 'invalid coordinates or radius', `rejects ${desc}`);
+  }
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
