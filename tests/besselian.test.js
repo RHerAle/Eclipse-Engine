@@ -1093,6 +1093,26 @@ const SUITE = ['2026-08-12', '2027-08-02', '2043-04-09', '2039-12-15', '2026-02-
   }
 }
 
+// ---------------------------------------------------------------------------
+// 21. obscurationGrid matches reference values across grid, tmax, vis, tvis
+//     to ensure optimizations preserve exact output.
+// ---------------------------------------------------------------------------
+{
+  const b = of('2026-08-12').elements;
+  const res = Bess.obscurationGrid(b, 400, 200, 121);
+  let sumGrid = 0, sumVis = 0, sumTmax = 0, sumTvis = 0;
+  for (let i = 0; i < res.grid.length; i++) {
+    sumGrid += res.grid[i];
+    sumVis += res.vis[i];
+    sumTmax += res.tmax[i];
+    sumTvis += res.tvis[i];
+  }
+  ok(Math.abs(sumGrid - 12798.320081094325) < 1e-9, `obscurationGrid sumGrid matches reference: ${sumGrid}`);
+  ok(Math.abs(sumVis - (-47341.43426054875)) < 1e-9, `obscurationGrid sumVis matches reference: ${sumVis}`);
+  ok(sumTmax === 927936, `obscurationGrid sumTmax matches reference: ${sumTmax}`);
+  ok(sumTvis === 1630480, `obscurationGrid sumTvis matches reference: ${sumTvis}`);
+}
+
 console.log(fails ? `${fails} FAILURES`
                   : 'besselian.js OK — agrees with eclipsecat.py, DE440s and NASA');
 process.exit(fails ? 1 : 0);
