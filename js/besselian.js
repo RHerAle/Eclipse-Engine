@@ -862,18 +862,30 @@ const Bess = (() => {
         }
         if (cmin > cmax || cmin > 1 || cmax < -1) continue;
         const h0 = Math.acos(clamp(cmax)), h1 = Math.acos(clamp(cmin));
-        for (const arc of [[h0, h1], [-h1, -h0]]) {
-          const lo = Math.ceil((arc[0] * R2D - base + 180) / 360 * nlon - 0.5);
-          const hi = Math.floor((arc[1] * R2D - base + 180) / 360 * nlon - 0.5);
-          for (let ii = lo; ii <= hi; ii++) {
-            const i = ((ii % nlon) + nlon) % nlon;
+
+        // Hoist products invariant across the row iterations
+        const sp_sd = r.sp * sd, cp_cd = r.cp * cd;
+        const rs_sd = r.rs * sd, rc_cd = r.rc * cd;
+        const y0 = e.y - r.rs * cd, rc_sd = r.rc * sd;
+        const jnlon = j * nlon;
+
+        // Iterate two arcs directly without allocating nested arrays `[[h0, h1], [-h1, -h0]]`
+        for (let pass = 0; pass < 2; pass++) {
+          const a0 = pass === 0 ? h0 : -h1;
+          const a1 = pass === 0 ? h1 : -h0;
+          const lo = Math.ceil((a0 * R2D - base + 180) / 360 * nlon - 0.5);
+          const hi = Math.floor((a1 * R2D - base + 180) / 360 * nlon - 0.5);
+
+          // Avoid modulo division in inner loop by wrapping index with branch
+          let i = ((lo % nlon) + nlon) % nlon;
+          for (let ii = lo; ii <= hi; ii++, (i = (i + 1 === nlon ? 0 : i + 1))) {
             const cH = cHs[i];
             // Geodetic horizon, the same one obsAt and local() use.
-            if (r.sp * sd + r.cp * cd * cH <= 0) continue;
-            const zeta = r.rs * sd + r.rc * cH * cd;
-            const m = hypot(e.x - r.rc * sHs[i], e.y - (r.rs * cd - r.rc * cH * sd));
+            if (sp_sd + cp_cd * cH <= 0) continue;
+            const zeta = rs_sd + rc_cd * cH;
+            const m = hypot(e.x - r.rc * sHs[i], y0 + rc_sd * cH);
             const L1 = e.l1 - zeta * B.tan_f1;
-            const idx = j * nlon + i;
+            const idx = jnlon + i;
             const vm = L1 - m;
             if (vm > vis[idx]) { vis[idx] = vm; tvis[idx] = k; }
             if (m >= L1) continue;
