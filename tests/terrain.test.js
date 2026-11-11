@@ -107,6 +107,25 @@ const BULNES = [43.238, -4.818], ARC = { azFrom: 260, azTo: 300 };
   ok((await settled(Terrain.buildings(...BULNES, 400))).startsWith('rejected'),
      'an Overpass answer that ran out of time fails, instead of reading as no buildings');
 
+  // 7. Security: input validation prevents Overpass QL injection and invalid bounds.
+  const badInputs = [
+    ['43.238);out;', -4.818, 400],
+    [43.238, '-4.818);node(1);', 400],
+    [43.238, -4.818, '400);out;'],
+    [95, -4.818, 400],
+    [-95, -4.818, 400],
+    [43.238, 190, 400],
+    [43.238, -190, 400],
+    [43.238, -4.818, 0],
+    [43.238, -4.818, -100],
+    [NaN, -4.818, 400],
+    [43.238, Infinity, 400]
+  ];
+  for (const args of badInputs) {
+    const s = await settled(Terrain.buildings(...args));
+    ok(s.startsWith('rejected'), `invalid input (${args.join(', ')}) is rejected: ${s}`);
+  }
+
   console.log(fails ? `terrain.test.js: ${fails} FAILURES`
     : 'terrain.js OK: a tile that fails or never answers fails the query, and is asked for again');
   process.exit(fails ? 1 : 0);
