@@ -1093,6 +1093,34 @@ const SUITE = ['2026-08-12', '2027-08-02', '2043-04-09', '2039-12-15', '2026-02-
   }
 }
 
+// ---------------------------------------------------------------------------
+// 21. obscurationGrid column index wrapping matches reference modulo wrapping.
+//     The inner loop maintains column index `i` wrapped via conditional
+//     branching instead of evaluating modulo on every iteration. This holds
+//     identical results to the bit against the reference modulo calculation.
+// ---------------------------------------------------------------------------
+{
+  const src = fs.readFileSync(require.resolve('../js/besselian.js'), 'utf8');
+  const modRef = { exports: {} };
+  const refCode = src.replace(
+    'let i = ((lo % nlon) + nlon) % nlon;\n          for (let ii = lo; ii <= hi; ii++, (i = (i + 1 === nlon ? 0 : i + 1))) {',
+    'for (let ii = lo; ii <= hi; ii++) {\n            const i = ((ii % nlon) + nlon) % nlon;'
+  );
+  new Function('module', refCode)(modRef);
+  for (const id of ['2026-08-12', '2028-07-22']) {
+    const Bx = of(id).elements;
+    const gFast = Bess.obscurationGrid(Bx, 144, 72, 61);
+    const gRef = modRef.exports.obscurationGrid(Bx, 144, 72, 61);
+    for (const k of ['grid', 'tmax', 'vis', 'tvis']) {
+      let mismatch = 0;
+      for (let idx = 0; idx < gFast[k].length; idx++) {
+        if (!Object.is(gFast[k][idx], gRef[k][idx])) mismatch++;
+      }
+      ok(mismatch === 0, `${id} ${k}: fast index wrapping matches reference modulo bit-for-bit`);
+    }
+  }
+}
+
 console.log(fails ? `${fails} FAILURES`
                   : 'besselian.js OK — agrees with eclipsecat.py, DE440s and NASA');
 process.exit(fails ? 1 : 0);
